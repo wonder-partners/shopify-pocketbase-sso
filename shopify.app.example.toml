@@ -1,0 +1,22 @@
+# Template for our own Shopify app, without the Headless channel.
+# Copy to shopify.app.toml and replace the app client ID and HTTPS origin.
+# Register and install the app before attempting a real customer login.
+client_id = "REPLACE_WITH_DEV_DASHBOARD_APP_CLIENT_ID"
+name = "Studio SSO"
+application_url = "https://studio.example/studio"
+embedded = false
+
+[access_scopes]
+scopes = "customer_read_customers"
+use_legacy_install_flow = false
+
+# Merchant OAuth callbacks are separate from customer authentication.
+# This prototype uses managed installation and needs no Admin API token.
+[auth]
+redirect_urls = []
+
+[customer_authentication]
+redirect_uris = ["https://studio.example/studio/callback"]
+
+[webhooks]
+api_version = "2026-10"
