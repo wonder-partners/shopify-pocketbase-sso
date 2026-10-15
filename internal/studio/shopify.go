@@ -19,7 +19,7 @@ import (
 
 type Config struct {
 	ShopURL           string
-	RedirectURL       string // Callback page owned by the frontend, on the API origin.
+	RedirectURL       string // Full callback URL chosen and served by the host frontend.
 	ClientID          string
 	ClientSecret      string // Optional: leave empty for a public client with PKCE.
 	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.

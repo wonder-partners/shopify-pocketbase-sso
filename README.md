@@ -27,7 +27,9 @@ Le state est désormais vérifié par le frontend, pas par le backend. La posses
 | `ClientSecret` | `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Vide pour notre client public PKCE |
 | `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement limitée au loopback |
 
-Le frontend et l'API doivent conserver la même origine. Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre cet en-tête sans le réécrire.
+Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Cette origine est celle du frontend, pas nécessairement celle de l'API. Si le frontend et l'API ont des origines différentes, leur configuration CORS doit autoriser les requêtes nécessaires. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre l'en-tête `Origin` sans le réécrire.
+
+L'application hôte choisit et sert sa page de callback. Aucun chemin n'est imposé ou enregistré par le module Go. `/auth/callback` dans l'exemple ci-dessous est une convention d'illustration, pas une route fournie par la bibliothèque. L'URL complète choisie doit être identique dans le frontend, dans `RedirectURL` et dans la configuration Shopify.
 
 La collection d'auth est fixée à `users` et doit exister. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens.
 
@@ -41,8 +43,9 @@ Dans un frontend avec bundler et le SDK officiel installé :
 import PocketBase from 'pocketbase';
 
 const pb = new PocketBase(window.location.origin);
-// Cette URL doit correspondre à SHOPIFY_REDIRECT_URL et au callback Shopify.
-const redirectURL = new URL('/studio/callback', window.location.origin).href;
+// Chemin choisi et servi par l'application hôte, pas par le module Go.
+// L'URL complète doit correspondre à SHOPIFY_REDIRECT_URL et au callback Shopify.
+const redirectURL = new URL('/auth/callback', window.location.origin).href;
 ```
 
 Les deux fonctions suivantes suffisent pour le passage OAuth. Elles appartiennent au frontend hôte ; aucun helper JavaScript n'est ajouté au backend Go.
