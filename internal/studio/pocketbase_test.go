@@ -122,7 +122,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 			return e.ForbiddenError("Blocked by application auth hook.", nil)
 		})
 		f.loginShop()
-		r := f.request("GET", f.authorize("/studio"), "", "", "")
+		r := f.completeCallback(f.authorize("/studio"))
 		f.expect(r, 403)
 		if called != 1 || strings.Contains(r.body, `"token"`) {
 			t.Fatal("auth hook was bypassed or a denied token escaped")
@@ -136,7 +136,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.loginShop()
-	f.expect(f.request("GET", f.authorize("/studio"), "", "", ""), 403)
+	f.expect(f.completeCallback(f.authorize("/studio")), 403)
 	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
@@ -156,7 +156,7 @@ func TestNativeMFAIsRequiredBeforeIssuingAShopifySession(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.loginShop()
-	r := f.request("GET", f.authorize("/studio"), "", "", "")
+	r := f.completeCallback(f.authorize("/studio"))
 	f.expect(r, 401)
 	var challenge struct {
 		MFAId string `json:"mfaId"`
@@ -180,7 +180,7 @@ func TestCreateRuleCanDisableShopifySignup(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.loginShop()
-	f.expect(f.request("GET", f.authorize("/studio"), "", "", ""), 403)
+	f.expect(f.completeCallback(f.authorize("/studio")), 403)
 	count, err := f.app.CountRecords("users")
 	if err != nil || count != 0 {
 		t.Fatal("a locked CreateRule must prevent provisioning a Shopify account")
@@ -213,7 +213,7 @@ func TestShopifyDoesNotClaimAnExistingPasswordAccountByEmail(t *testing.T) {
 	f := setup(t, "", "")
 	native := nativeSignup(f, "camille@example.test")
 	f.loginShop()
-	f.expect(f.request("GET", f.authorize("/studio"), "", "", ""), 409)
+	f.expect(f.completeCallback(f.authorize("/studio")), 409)
 	r, err := f.app.FindRecordById("users", native.Record["id"].(string))
 	if err != nil || r.GetString("shopify_sub") != "" {
 		t.Fatal("password account was silently linked by email")

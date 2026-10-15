@@ -8,6 +8,8 @@ Le flux est documenté par Shopify. Ce dépôt fournit l'adaptation Go/PocketBas
 
 L'étape d'intégration à PocketBase est également validée : le compte Shopify est maintenant enregistré dans `users`, reçoit un jeton PocketBase standard et accède à l'API avec le SDK officiel. L'utilisateur a confirmé le message « API PocketBase : accès confirmé avec le SDK officiel. » sur la vraie boutique. Les tests comparent les droits de ce compte à ceux d'un compte créé avec l'inscription et le mot de passe natifs.
 
+Le parcours passe désormais par `authWithOAuth2Code` et le fournisseur Go `shopify`, enregistré dans PocketBase. Le test réel de cette version est confirmé ; la liaison `_externalAuths` a été créée sur le compte `users` existant, sans doublon ni changement d'identifiant.
+
 ## Faisabilité et pistes examinées
 
 | Piste | Conclusion pour ce projet |
@@ -41,8 +43,9 @@ miniOrange commercialise par exemple une app « Store as IDP » pour connecter d
 2. Le lien « Studio » pointe vers `https://studio.example/studio`.
 3. Sans session locale, le studio lance une navigation vers Shopify avec `prompt=none`.
 4. Si Shopify reconnaît une session utilisable, il renvoie un code sans afficher de formulaire de connexion.
-5. Le backend échange ce code, valide le jeton d'identité et interroge le profil client.
-6. Il crée ou retrouve le compte PocketBase, pose un cookie de session studio, puis affiche le studio connecté.
+5. Le callback contrôle le state et le cookie du navigateur, puis charge le SDK officiel qui appelle `authWithOAuth2Code` sur l'endpoint OAuth2 natif de PocketBase.
+6. Le fournisseur Go Shopify échange le code, valide le jeton d'identité et interroge le profil client. PocketBase crée ou retrouve le compte, enregistre sa liaison OAuth et finalise l'authentification.
+7. La réponse native alimente `pb.authStore` et le cookie HttpOnly du studio, puis le navigateur affiche le studio connecté.
 
 Le navigateur effectue des redirections. L'absence de nouvelle saisie dépend de la session Shopify et des règles du fournisseur. Une session expirée ou une interaction exigée par Shopify empêche une entrée entièrement automatique.
 
@@ -197,11 +200,31 @@ Le package `internal/studio` contient le flux. Dans le hook `OnServe`, `studio.N
 
 La collection d'auth est `users` par défaut, configurable avec `STUDIO_AUTH_COLLECTION`. Le code y ajoute les champs texte manquants `shopify_issuer`, `shopify_sub`, `shopify_customer_id`, `first_name` et `last_name`, ainsi qu'un index unique partiel sur le couple émetteur/sujet non vide. Les comptes natifs sans liaison Shopify restent possibles. Une collection non-auth ou `_superusers` est refusée.
 
-Les règles et les politiques existantes de la collection sont conservées : inscription, lecture, modification, `AuthRule`, durée des jetons, mot de passe, OTP, MFA et alertes. Une première inscription Shopify doit satisfaire `CreateRule`. Les champs d'identité Shopify sont gérés par le serveur ; les requêtes publiques de création ou modification ne peuvent pas les définir. La liaison ne recherche jamais un compte par e-mail. Un conflit avec un compte existant donne une erreur, sans fusion automatique.
+Les règles et les politiques existantes de la collection sont conservées : inscription, lecture, modification, `AuthRule`, durée des jetons, mot de passe, OTP, MFA et alertes. L'intégration active OAuth2 et ajoute ou met à jour uniquement son fournisseur `shopify`, sans supprimer les autres fournisseurs. Une première inscription Shopify doit satisfaire `CreateRule` et les hooks de création natifs. Les champs d'identité Shopify sont gérés par le serveur ; les requêtes publiques de création ou modification ne peuvent pas les définir.
+
+La liaison autorisée repose sur l'identité Shopify, jamais sur le seul e-mail ou sur le compte déjà connecté dans `Authorization`. PocketBase peut trouver ces candidats dans son traitement OAuth natif ; notre hook les refuse s'ils ne correspondent pas à l'identité Shopify existante. Un conflit donne une erreur `409`, sans fusion automatique. L'identifiant du fournisseur dans `_externalAuths` est un SHA-256 du couple émetteur/sujet, avec séparateur non ambigu. Le sujet Shopify exact reste disponible dans `shopify_sub`.
 
 Les appels API ultérieurs suivent le fonctionnement PocketBase habituel : le middleware charge `e.Auth` depuis le jeton, les règles utilisent `@request.auth`, et les hooks des requêtes API, des modèles et d'enrichissement s'appliquent normalement. Les tests couvrent aussi les relations de propriétaire et le filtrage realtime. Rien n'est accordé implicitement à un compte parce qu'il provient de Shopify.
 
 L'ancienne collection de démonstration `studio_customers` est conservée. Il n'y a ni migration automatique de ses comptes ni réaffectation de ses relations. Une sauvegarde SQLite cohérente a été créée avant l'évolution du schéma dans `pb_backups/before-native-auth-20261015.db`, ignorée par Git. Dans un projet existant, vérifier les champs obligatoires et les types des champs avant intégration. Un champ Shopify déjà présent avec un type incompatible fait échouer le démarrage plutôt que modifier ce type.
+
+Pour les comptes déjà créés dans `users` par le prototype précédent, le premier login OAuth retrouve le couple émetteur/sujet puis laisse PocketBase créer la liaison `_externalAuths`. L'identifiant du compte et ses relations sont conservés. Une seconde sauvegarde, `pb_backups/before-native-oauth2-20261015.db`, précède cette évolution.
+
+### Connexion OAuth native avec redirection
+
+Le point d'entrée reste `/studio` pour une tentative silencieuse ou `/studio/auth` pour une connexion interactive. Le callback `/studio/callback` contrôle le state, l'expiration et le cookie de navigateur. Il sert ensuite une page privée avec `/studio/callback.js`, qui efface les paramètres de l'adresse et appelle :
+
+```javascript
+await pb.collection(collection).authWithOAuth2Code(
+  'shopify', code, verifier, redirectURL,
+);
+```
+
+Ces paramètres proviennent du callback vérifié côté serveur, pas de valeurs choisies librement par le frontend. Le code Shopify réel est échangé par le fournisseur dans l'endpoint natif `/api/collections/{collection}/auth-with-oauth2`. Il ne s'agit pas d'un endpoint parallèle qui fabriquerait son propre compte ou jeton.
+
+`authWithOAuth2Code` convient au parcours de navigation de premier niveau déjà retenu. La variante `authWithOAuth2` avec popup dépend d'une connexion realtime pendant l'authentification et n'est pas utilisée ici. Le fournisseur exige un code préparé par notre callback et lié au même navigateur ; un appel direct avec un code non préparé est refusé. Le SDK utilise son mécanisme standard d'enregistrement de la réponse dans l'auth store. [Référence du SDK](https://github.com/pocketbase/js-sdk#recordservice), [interface des fournisseurs Go](https://pkg.go.dev/github.com/pocketbase/pocketbase@v0.40.5/tools/auth#Provider).
+
+Le client public Shopify n'a toujours aucun secret. PocketBase `0.40.5` impose toutefois un champ `clientSecret` non vide dans la configuration d'un fournisseur. Le code y inscrit le marqueur public `public-pkce-no-secret`. Ce n'est pas un secret et le fournisseur ne le transmet jamais à Shopify : il utilise le client PKCE configuré côté serveur. Les tests du fournisseur simulé refusent expressément tout secret ou en-tête Basic dans ce mode. Les identifiants d'un éventuel client confidential restent, eux aussi, pilotés par la configuration serveur.
 
 ### Session et SDK officiel
 
@@ -222,11 +245,13 @@ Ce code suppose une instance `pb` du SDK officiel. Le prototype sert ce SDK, ver
 
 Le jeton est un jeton PocketBase, pas un jeton Shopify. Pour publier une collection métier via la gateway de test, démarrer celle-ci avec, par exemple, `$env:STUDIO_PUBLIC_COLLECTIONS = 'users,documents'`. Définir ensuite les règles PocketBase de cette collection, par exemple `owner = @request.auth.id` pour les données privées du propriétaire. Si l'on change `STUDIO_AUTH_COLLECTION`, ajuster aussi cette liste. La [documentation PocketBase](https://pocketbase.io/docs/authentication/) explique les sessions SDK et les méthodes OAuth natives.
 
-### Ce qui reste personnalisé
+### Hooks natifs et adaptation Shopify
 
-Après validation de Shopify, le code appelle `apis.RecordAuthResponse`. PocketBase applique alors `AuthRule`, `OnRecordAuthRequest`, la MFA, les alertes et l'enrichissement de la réponse. Un refus de hook ne délivre pas de cookie ou de jeton de succès. Une MFA activée renvoie le challenge natif `401` avec `mfaId`, sans session anticipée. L'interface de saisie du second facteur n'est pas encore fournie ; ce challenge peut être terminé avec les méthodes natives.
+Le parcours déclenche `OnRecordAuthWithOAuth2Request`, puis, pour un nouveau compte, le traitement natif de création avec `OnRecordCreateRequest`, ses règles et sa transaction. PocketBase enregistre la liaison `_externalAuths`, puis applique `AuthRule`, `OnRecordAuthRequest`, la MFA, les alertes et l'enrichissement de la réponse. Les hooks de l'application peuvent refuser la connexion ou l'inscription. Un refus de hook, même après `e.Next`, ne délivre pas de cookie ou de jeton de succès.
 
-Le flux Shopify n'est pas encore un fournisseur enregistré dans `authWithOAuth2`. Il ne déclenche donc pas `OnRecordAuthWithOAuth2Request`. La synchronisation du compte utilise `Save`, déclenche les hooks de modèle et contrôle explicitement `CreateRule` pour une inscription, mais ne passe pas par `OnRecordCreateRequest`. Les hooks d'une application qui doivent interdire une connexion Shopify doivent être placés sur `OnRecordAuthRequest` ou dans sa politique `AuthRule`, pas seulement dans un hook propre au login OAuth natif.
+L'adaptation spécifique garde le contrôle du démarrage et du callback, valide Shopify, synchronise le profil et refuse les liaisons automatiques par e-mail. La synchronisation d'un profil existant utilise `Save` et les hooks de modèle ; elle ne simule pas une requête publique `PATCH` ni ses hooks de requête. Les tokens Shopify ne sont pas inclus dans les métadonnées de la réponse OAuth PocketBase. L'e-mail du fournisseur n'est déclaré vérifié que si le claim Shopify vérifié correspond au profil.
+
+Une MFA activée renvoie le challenge natif `401` avec `mfaId`, sans session anticipée. La page de callback signale ce besoin, mais l'interface de saisie du second facteur n'est pas encore fournie ; ce challenge peut être terminé avec les méthodes natives.
 
 Le package est encore sous `internal/studio`, dans un projet de démonstration. Ce n'est pas encore une dépendance Go installable dans un autre module. L'extraction en module indépendant et les migrations versionnées restent une étape distincte de l'alignement API réalisé ici.
 
@@ -252,7 +277,7 @@ Le test réel a révélé un jeton dont `sub` est un nombre JSON, alors que `go-
 
 L'adaptateur `shopifySubjectKeySet` s'exécute dans le vérificateur `go-oidc`. La bibliothèque filtre d'abord l'algorithme, puis l'adaptateur fait vérifier la signature du JWT original par le JWKS. Il convertit seulement ensuite un `sub` entier positif en sa chaîne décimale exacte pour le décodage des claims. Il ne convertit pas les autres champs et ne passe jamais par un nombre flottant. Les fractions, exposants, nombres négatifs et types inattendus sont refusés. Les sujets déjà textuels restent inchangés.
 
-Le vérificateur conserve ses contrôles d'émetteur, d'audience, d'expiration et de `nbf`, puis le callback vérifie le nonce et `at_hash` s'il est présent. Aucun mode `Skip*` n'est activé. Cette adaptation dépend du fonctionnement de la version `go-oidc v3.21.0` fixée dans le projet. Conserver les tests de non-régression lors de toute mise à jour de cette dépendance.
+Le vérificateur conserve ses contrôles d'émetteur, d'audience, d'expiration et de `nbf`, puis le fournisseur Shopify vérifie le nonce et `at_hash` s'il est présent. Aucun mode `Skip*` n'est activé. Cette adaptation dépend du fonctionnement de la version `go-oidc v3.21.0` fixée dans le projet. Conserver les tests de non-régression lors de toute mise à jour de cette dépendance.
 
 ## Validation sur la boutique de développement
 

@@ -10,12 +10,11 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
 const collectionName = "users"
-
-var errSignupForbidden = errors.New("Shopify signup does not satisfy the collection CreateRule")
 
 // Add only the identity fields/index. Preserve existing rules and auth policies.
 func ensureCollection(app core.App, name string) error {
@@ -52,6 +51,11 @@ func ensureCollection(app core.App, name string) error {
 		if err := e.BindBody(&body); err != nil {
 			return err
 		}
+		// Native OAuth signup is an internal records API request. PocketBase
+		// copies the event store, not the HTTP context, to that request.
+		if _, trusted := e.Get(trustedProfileKey).(*shopifyProvider); trusted {
+			return e.Next()
+		}
 		for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {
 			if _, exists := body[field]; exists {
 				return e.ForbiddenError("Shopify identity fields are managed by the server.", nil)
@@ -64,49 +68,96 @@ func ensureCollection(app core.App, name string) error {
 	return nil
 }
 
-func (s *Service) saveCustomer(subject string, c *customer, cl claims, info *core.RequestInfo) (*core.Record, error) {
-	var saved *core.Record
-	err := s.app.RunInTransaction(func(tx core.App) error {
-		r, err := tx.FindFirstRecordByFilter(s.cfg.AuthCollection,
-			"shopify_issuer = {:issuer} && shopify_sub = {:subject}", dbx.Params{"issuer": s.issuer, "subject": subject})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+func (s *Service) configureProvider() error {
+	c, err := s.app.FindCollectionByNameOrId(s.cfg.AuthCollection)
+	if err != nil {
+		return err
+	}
+	s.cfg.AuthCollection = c.Name
+	secret := s.cfg.ClientSecret
+	if secret == "" {
+		// PocketBase v0.40.5 requires a non-empty config field even for public
+		// clients. This public marker is never used by the provider's exchange.
+		secret = "public-pkce-no-secret"
+	}
+	config := core.OAuth2ProviderConfig{
+		Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: secret,
+		AuthURL: s.oauth.Endpoint.AuthURL, TokenURL: s.oauth.Endpoint.TokenURL,
+		DisplayName: "Shopify", PKCE: types.Pointer(true),
+	}
+	replaced := false
+	for i := range c.OAuth2.Providers {
+		if c.OAuth2.Providers[i].Name == providerName {
+			c.OAuth2.Providers[i] = config
+			replaced = true
 		}
-		isNew := errors.Is(err, sql.ErrNoRows)
-		if isNew {
-			coll, err := tx.FindCollectionByNameOrId(s.cfg.AuthCollection)
-			if err != nil {
-				return err
-			}
-			r = core.NewRecord(coll)
-			r.SetPassword(random())
-		}
-		// Never identify or merge an existing account by email.
-		r.Set("shopify_issuer", s.issuer)
-		r.Set("shopify_sub", subject)
-		r.Set("shopify_customer_id", c.ID)
-		r.Set("first_name", c.FirstName)
-		r.Set("last_name", c.LastName)
-		keepVerified := r.Verified() && strings.EqualFold(r.Email(), c.EmailAddress.Email)
-		r.SetEmail(c.EmailAddress.Email)
-		if isNew {
-			createInfo := &core.RequestInfo{}
-			if info != nil {
-				createInfo = info.Clone()
-			}
-			createInfo.Context, createInfo.Method = core.RequestInfoContextOAuth2, http.MethodPost
-			createInfo.Body = map[string]any{"email": c.EmailAddress.Email, "first_name": c.FirstName, "last_name": c.LastName}
-			allowed, ruleErr := tx.CanAccessRecord(r, createInfo, r.Collection().CreateRule)
-			if ruleErr != nil || !allowed {
-				return errSignupForbidden
-			}
-		}
-		r.SetVerified(keepVerified || (cl.EmailVerified && strings.EqualFold(cl.Email, c.EmailAddress.Email)))
-		if err := tx.Save(r); err != nil {
-			return fmt.Errorf("save customer, including possible email conflict: %w", err)
-		}
-		saved = r
-		return nil
+	}
+	if !replaced {
+		c.OAuth2.Providers = append(c.OAuth2.Providers, config)
+	}
+	c.OAuth2.Enabled = true
+	if err := s.app.Save(c); err != nil {
+		return err
+	}
+	s.app.OnRecordAuthWithOAuth2Request(c.Name).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
+		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,
 	})
-	return saved, err
+	return nil
+}
+
+func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) error {
+	if e.ProviderName != providerName {
+		return e.Next()
+	}
+	p, ok := e.ProviderClient.(*shopifyProvider)
+	if !ok || p.service != s || p.profile == nil {
+		return e.ForbiddenError("Missing verified Shopify identity.", nil)
+	}
+	// Native OAuth can find a record by verified email or current auth header.
+	// Neither is sufficient for our policy: require an existing Shopify identity.
+	r, err := s.app.FindFirstRecordByFilter(s.cfg.AuthCollection,
+		"shopify_issuer = {:issuer} && shopify_sub = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if e.Record != nil && (r == nil || e.Record.Id != r.Id) {
+		return router.NewApiError(http.StatusConflict, "Shopify cannot automatically link an existing account.", nil)
+	}
+	// Lazily preserve the prototype user's id and all relations on first login.
+	if r != nil {
+		e.Record, e.IsNewRecord = r, false
+	}
+	emailOwner, err := s.app.FindAuthRecordByEmail(s.cfg.AuthCollection, p.profile.EmailAddress.Email)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if emailOwner != nil && (r == nil || emailOwner.Id != r.Id) {
+		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
+	}
+	values := map[string]any{
+		"email": p.profile.EmailAddress.Email, "first_name": p.profile.FirstName, "last_name": p.profile.LastName,
+		"shopify_issuer": s.issuer, "shopify_sub": p.subject, "shopify_customer_id": p.profile.ID,
+	}
+	e.Set(trustedProfileKey, p)
+	if r == nil {
+		if e.CreateData == nil {
+			e.CreateData = map[string]any{}
+		}
+		for field, value := range values {
+			e.CreateData[field] = value
+		}
+		delete(e.CreateData, "verified")
+		delete(e.CreateData, "password")
+		delete(e.CreateData, "passwordConfirm")
+	} else {
+		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
+		for field, value := range values {
+			r.Set(field, value)
+		}
+		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
+		if err := s.app.Save(r); err != nil {
+			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)
+		}
+	}
+	return e.Next()
 }

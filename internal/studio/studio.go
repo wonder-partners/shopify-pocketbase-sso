@@ -17,6 +17,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"golang.org/x/oauth2"
 )
@@ -36,6 +37,7 @@ type Service struct {
 	issuer, graphql string
 	mu              sync.Mutex
 	pending         map[string]pending
+	ready           map[string]pending
 }
 
 func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
@@ -51,7 +53,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if cfg.AuthCollection == "" {
 		cfg.AuthCollection = collectionName
 	}
-	s := &Service{app: app, cfg: cfg, pending: map[string]pending{}, client: &http.Client{
+	s := &Service{app: app, cfg: cfg, pending: map[string]pending{}, ready: map[string]pending{}, client: &http.Client{
 		Timeout: 10 * time.Second, Transport: shopTransport{origin: cfg.StudioURL},
 		// A redirect must not leak access tokens to another endpoint.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -62,10 +64,14 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if err := ensureCollection(app, cfg.AuthCollection); err != nil {
 		return nil, err
 	}
+	if err := s.configureProvider(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
 func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
+	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "studio_shopify_oauth2", Func: s.nativeOAuthMiddleware})
 	g := r.Group("/studio")
 	// Authorization callbacks carry a one-time code. Do not log their query strings.
 	g.Unbind(apis.DefaultActivityLoggerMiddlewareId)
@@ -74,7 +80,7 @@ func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
 	g.GET("/callback", s.callback)
 	g.POST("/session", s.session)
 	g.POST("/logout", s.logout)
-	for _, name := range []string{"client.js", "pocketbase.es.mjs"} {
+	for _, name := range []string{"client.js", "callback.js", "pocketbase.es.mjs"} {
 		g.GET("/"+name, func(e *core.RequestEvent) error {
 			body, err := browserAssets.ReadFile("web/" + name)
 			if err != nil {
@@ -125,7 +131,12 @@ func (s *Service) begin(e *core.RequestEvent, silent bool) error {
 			delete(s.pending, k)
 		}
 	}
-	if len(s.pending) >= 10000 {
+	for k, v := range s.ready {
+		if time.Now().After(v.Expires) {
+			delete(s.ready, k)
+		}
+	}
+	if len(s.pending)+len(s.ready) >= 10000 {
 		s.mu.Unlock()
 		return e.TooManyRequestsError("Too many login attempts.", nil)
 	}
@@ -161,8 +172,8 @@ func (s *Service) callback(e *core.RequestEvent) error {
 	if !ok {
 		return e.BadRequestError("Invalid or expired login state.", nil)
 	}
-	s.setCookie(e, "flow", "", -1)
 	if q.Get("error") != "" {
+		s.setCookie(e, "flow", "", -1)
 		if p.Silent && (q.Get("error") == "login_required" || q.Get("error") == "interaction_required" || q.Get("error") == "consent_required") {
 			return e.Redirect(http.StatusSeeOther, "/studio?checked=1")
 		}
@@ -171,49 +182,20 @@ func (s *Service) callback(e *core.RequestEvent) error {
 	if q.Get("code") == "" {
 		return e.BadRequestError("Missing authorization code.", nil)
 	}
-	ctx := oidc.ClientContext(e.Request.Context(), s.client)
-	token, err := s.oauth.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(p.Verifier))
-	if err != nil {
-		return router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
-	}
-	raw, _ := token.Extra("id_token").(string)
-	id, err := s.verifier.Verify(ctx, raw)
-	if err != nil {
-		reason := idTokenFailureReason(err)
-		s.app.Logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
-		return e.UnauthorizedError("Invalid Shopify ID token ("+reason+").", nil)
-	}
-	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(p.Nonce)) != 1 || id.Subject == "" {
-		return e.UnauthorizedError("Invalid Shopify nonce or subject.", nil)
-	}
-	if id.AccessTokenHash != "" {
-		if err := id.VerifyAccessToken(token.AccessToken); err != nil {
-			return e.UnauthorizedError("Invalid access token hash.", nil)
-		}
-	}
-	var cl claims
-	if err := id.Claims(&cl); err != nil {
-		return e.UnauthorizedError("Invalid Shopify claims.", nil)
-	}
-	c, err := s.fetchCustomer(ctx, token.AccessToken)
-	if err != nil {
-		return router.NewApiError(http.StatusBadGateway, "Unable to read the Shopify customer. Check Customer Account API permissions.", nil)
-	}
-	info, err := e.RequestInfo()
+	// Only this browser-bound callback can prepare a code for the native endpoint.
+	// The provider still exchanges the real Shopify code and validates its ID token.
+	s.mu.Lock()
+	s.ready[q.Get("code")] = p
+	s.mu.Unlock()
+	var b bytes.Buffer
+	err = callbackPage.Execute(&b, map[string]string{
+		"Code": q.Get("code"), "Verifier": p.Verifier,
+		"RedirectURL": s.oauth.RedirectURL, "Collection": s.cfg.AuthCollection,
+	})
 	if err != nil {
 		return err
 	}
-	record, err := s.saveCustomer(id.Subject, c, cl, info)
-	if err != nil {
-		if errors.Is(err, errSignupForbidden) {
-			return e.ForbiddenError("Shopify signup is not allowed by this collection.", nil)
-		}
-		return router.NewApiError(http.StatusConflict, "Unable to save the customer. Check server-side collection constraints.", nil)
-	}
-	// Use the same AuthRule, auth hooks, MFA, enrichment, login alerts and
-	// renewable token policy as PocketBase's built-in authentication methods.
-	e.Set(core.RequestEventKeyInfoContext, core.RequestInfoContextOAuth2)
-	return s.authResponse(e, record, core.MFAMethodOAuth2, true)
+	return e.HTML(http.StatusOK, b.String())
 }
 
 func (s *Service) current(e *core.RequestEvent) (*core.Record, string) {
@@ -267,7 +249,7 @@ func (s *Service) session(e *core.RequestEvent) error {
 	}
 	// Bootstrap the SDK from an existing authenticated cookie. An empty method,
 	// like native auth-refresh, avoids counting this as a new MFA first factor.
-	return s.authResponse(e, r, "", false)
+	return s.authResponse(e, r, "")
 }
 
 func (s *Service) logout(e *core.RequestEvent) error {
@@ -292,3 +274,9 @@ var page = template.Must(template.New("studio").Parse(`<!doctype html>
 
 //go:embed web/*
 var browserAssets embed.FS
+
+var callbackPage = template.Must(template.New("callback").Parse(`<!doctype html>
+<html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Connexion au studio</title><main id="oauth" data-code="{{.Code}}" data-verifier="{{.Verifier}}" data-redirect="{{.RedirectURL}}" data-collection="{{.Collection}}">
+<p id="oauth-status">Connexion à PocketBase en cours…</p><a href="/studio?checked=1">Retour au studio</a></main>
+<script type="module" src="/studio/callback.js"></script></html>`))

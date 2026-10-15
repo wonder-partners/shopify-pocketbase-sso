@@ -5,11 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ type fixture struct {
 	app          *pocketbase.PocketBase
 	s            *Service
 	client       *http.Client
+	mock         *mockshop.Mock
 }
 
 func setup(t *testing.T, secret, fault string) *fixture {
@@ -41,6 +44,7 @@ func setup(t *testing.T, secret, fault string) *fixture {
 		t.Fatal(err)
 	}
 	f.shop.Config.Handler = m
+	f.mock = m
 	f.shop.Start()
 	t.Cleanup(f.shop.Close)
 	f.app = pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir()})
@@ -135,10 +139,37 @@ func (f *fixture) authorize(path string) string {
 func (f *fixture) loginStudio() response {
 	f.t.Helper()
 	f.loginShop()
-	cb := f.authorize("/studio")
-	r := f.request("GET", cb, "", "", "")
-	f.expect(r, 303)
+	cb := f.authorize("/studio/auth")
+	r := f.completeCallback(cb)
+	f.expect(r, 200)
 	return r
+}
+
+// Exercise the real native OAuth endpoint, as callback.js does in a browser.
+func (f *fixture) completeCallback(callback string) response {
+	f.t.Helper()
+	page := f.request("GET", callback, "", "", "")
+	if page.status != 200 {
+		return page
+	}
+	data := callbackData(f.t, page.body)
+	collection := data["collection"]
+	delete(data, "collection")
+	body, _ := json.Marshal(data)
+	return f.request("POST", f.studio.URL+"/api/collections/"+collection+"/auth-with-oauth2", f.studio.URL, string(body), "")
+}
+
+func callbackData(t *testing.T, page string) map[string]string {
+	t.Helper()
+	data := map[string]string{"provider": providerName}
+	for attribute, field := range map[string]string{"code": "code", "verifier": "codeVerifier", "redirect": "redirectURL", "collection": "collection"} {
+		match := regexp.MustCompile(`data-` + attribute + `="([^"]*)"`).FindStringSubmatch(page)
+		if len(match) != 2 {
+			t.Fatal("callback page is missing native OAuth parameters")
+		}
+		data[field] = html.UnescapeString(match[1])
+	}
+	return data
 }
 
 func (f *fixture) session() (string, *core.Record) {
@@ -170,8 +201,8 @@ func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := setup(t, secret, "")
 			callback := f.loginStudio()
-			if callback.location != "/studio" {
-				t.Fatal(callback.location)
+			if decodeAuth(t, callback).Token == "" {
+				t.Fatal("missing native OAuth response")
 			}
 			token, record := f.session()
 			if record.Email() != mockshop.Email || record.GetString("first_name") != "Camille" || !record.Verified() {
@@ -224,7 +255,7 @@ func TestAnonymousVisitorSeesShopifyLoginLink(t *testing.T) {
 	f.request("POST", f.shop.URL+"/login", "", "", "")
 	auth := f.request("GET", interactive.location, "", "", "")
 	f.expect(auth, 302)
-	f.expect(f.request("GET", auth.location, "", "", ""), 303)
+	f.expect(f.completeCallback(auth.location), 200)
 	f.session()
 }
 
@@ -244,7 +275,7 @@ func TestCallbackRequiresStateAndBrowserBinding(t *testing.T) {
 	f.client.Jar = jar
 	f.expect(f.request("GET", cb, "", "", ""), 400)
 	f.client.Jar = original
-	f.expect(f.request("GET", cb, "", "", ""), 303)
+	f.expect(f.completeCallback(cb), 200)
 	// Replaying a previously consumed callback must fail.
 	f.expect(f.request("GET", cb, "", "", ""), 400)
 }
@@ -255,7 +286,7 @@ func TestInvalidIdentityTokensRejected(t *testing.T) {
 			f := setup(t, "", fault)
 			f.loginShop()
 			cb := f.authorize("/studio")
-			f.expect(f.request("GET", cb, "", "", ""), 401)
+			f.expect(f.completeCallback(cb), 401)
 			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 		})
 	}
@@ -283,7 +314,7 @@ func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
 			f := setup(t, "", "numeric:"+fault)
 			f.loginShop()
 			cb := f.authorize("/studio")
-			f.expect(f.request("GET", cb, "", "", ""), 401)
+			f.expect(f.completeCallback(cb), 401)
 			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 		})
 	}
@@ -349,7 +380,7 @@ func TestRealVerifierErrorsReceiveSafeDiagnostics(t *testing.T) {
 			f := setup(t, "", tc.fault)
 			f.loginShop()
 			cb := f.authorize("/studio")
-			r := f.request("GET", cb, "", "", "")
+			r := f.completeCallback(cb)
 			f.expect(r, 401)
 			if !strings.Contains(r.body, "("+tc.reason+")") {
 				t.Fatalf("missing safe diagnostic: %s", r.body)
@@ -411,7 +442,7 @@ func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
 	f := setup(t, "", "graphql")
 	f.loginShop()
 	cb := f.authorize("/studio")
-	f.expect(f.request("GET", cb, "", "", ""), 502)
+	f.expect(f.completeCallback(cb), 502)
 	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
@@ -419,21 +450,14 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginStudio()
 	_, r := f.session()
-	c := &customer{ID: r.GetString("shopify_customer_id"), FirstName: "Updated"}
-	c.EmailAddress = &struct {
-		Email string `json:"emailAddress"`
-	}{Email: "new@example.test"}
-	updated, err := f.s.saveCustomer(r.GetString("shopify_sub"), c, claims{Email: "new@example.test", EmailVerified: true}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.mock.ProfileEmail = "new@example.test"
+	f.loginStudio()
+	_, updated := f.session()
 	if updated.Id != r.Id || updated.Email() != "new@example.test" {
 		t.Fatal("email change created a new identity")
 	}
-	_, err = f.s.saveCustomer("different-shopify-subject", c, claims{}, nil)
-	if err == nil {
-		t.Fatal("another subject must not take over the existing email")
-	}
+	f.mock.Subject = "different-shopify-subject"
+	f.expect(f.completeCallback(f.authorize("/studio/auth")), 409)
 	unchanged, err := f.app.FindRecordById(collectionName, r.Id)
 	if err != nil || unchanged.GetString("shopify_sub") != r.GetString("shopify_sub") {
 		t.Fatal("existing account changed")
@@ -532,7 +556,7 @@ func TestPKCETamperingRejected(t *testing.T) {
 	u.RawQuery = q.Encode()
 	a := f.request("GET", u.String(), "", "", "")
 	f.expect(a, 302)
-	f.expect(f.request("GET", a.location, "", "", ""), 502)
+	f.expect(f.completeCallback(a.location), 502)
 }
 
 // PocketBase already has an OIDC provider. Verify its compatibility separately

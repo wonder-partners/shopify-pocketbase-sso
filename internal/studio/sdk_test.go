@@ -3,9 +3,11 @@ package studio
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,5 +33,30 @@ func TestOfficialPocketBaseJavaScriptSDK(t *testing.T) {
 	// Do not print error bodies: SDK exceptions can include request auth data.
 	if err := cmd.Run(); err != nil {
 		t.Fatal("official PocketBase JS SDK integration failed:", err)
+	}
+}
+
+func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
+	if os.Getenv("RUN_JS_SDK_TEST") != "1" {
+		t.Skip("set RUN_JS_SDK_TEST=1 to execute the official JS SDK")
+	}
+	f := setup(t, "", "numeric:")
+	f.loginShop()
+	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	f.expect(page, 200)
+	input := callbackData(t, page.body)
+	input["url"] = f.studio.URL
+	u, _ := url.Parse(f.studio.URL)
+	var cookies []string
+	for _, c := range f.client.Jar.Cookies(u) {
+		cookies = append(cookies, c.Name+"="+c.Value)
+	}
+	input["cookie"] = strings.Join(cookies, "; ")
+	data, _ := json.Marshal(input)
+	script, _ := filepath.Abs("../../integration/oauth.mjs")
+	cmd := exec.Command("node", script)
+	cmd.Stdin = bytes.NewReader(data)
+	if err := cmd.Run(); err != nil {
+		t.Fatal("official SDK authWithOAuth2Code integration failed:", err)
 	}
 }

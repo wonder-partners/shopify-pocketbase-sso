@@ -2,7 +2,7 @@
 
 Exécution le 15 octobre 2026, Windows amd64, Go 1.27.2 et PocketBase 0.40.5.
 
-Le prototype passe les tests locaux. L'app est installée sur une vraie dev store Basic non-Plus. L'utilisateur a confirmé sa connexion Shopify, puis l'accès à son compte `users` par l'API PocketBase avec le SDK officiel. Les étapes historiques sont conservées ci-dessous ; la section « Alignement PocketBase et API » décrit l'état actuel.
+Le prototype passe les tests locaux. L'app est installée sur une vraie dev store Basic non-Plus. L'utilisateur a confirmé sa connexion Shopify, puis l'accès à son compte `users` par l'API PocketBase avec le SDK officiel. Il a ensuite confirmé le nouveau parcours `authWithOAuth2Code`. La section « Fournisseur OAuth2 natif » décrit l'état actuel ; les étapes précédentes sont conservées comme historique.
 
 ## Tests automatisés
 
@@ -12,10 +12,14 @@ $env:RUN_JS_SDK_TEST = '1'
 go test ./... -count=1 -cover
 go vet ./...
 node --check internal/studio/web/client.js
+node --check internal/studio/web/callback.js
 node --check integration/sdk.mjs
+node --check integration/oauth.mjs
 ```
 
-Résultat : succès. Le package `internal/studio` contient 28 groupes de tests et sa couverture d'instructions est de 86,6 %. La gateway atteint 65,2 %. Le test Node exécute réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test. Sans `RUN_JS_SDK_TEST=1`, ce test est ignoré ; les autres tests Go restent exécutés.
+Résultat : succès, 38 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 86,2 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
+
+Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test, y compris `authWithOAuth2Code`. Sans `RUN_JS_SDK_TEST=1`, ces tests sont ignorés ; les autres tests Go restent exécutés.
 
 | Scénario | Résultat |
 | --- | --- |
@@ -54,6 +58,16 @@ Résultat : succès. Le package `internal/studio` contient 28 groupes de tests e
 | Configuration HTTP en dehors du loopback explicitement autorisé | Rejetée |
 | Cookie en configuration HTTPS | Secure, HttpOnly, SameSite=Lax, préfixe `__Host-`, sans Domain |
 | Fournisseur OIDC natif de PocketBase | Extraction de l'identité et validation JWKS vérifiées |
+| Fournisseur Go `shopify` et `authWithOAuth2Code` du SDK officiel | Inscription et connexion par l'endpoint OAuth natif, auth store alimenté automatiquement |
+| Hooks OAuth2 et création de compte | Déclenchés avec le contexte OAuth2 ; leurs refus sont respectés avant et après `e.Next` |
+| Liaison `_externalAuths` et reconnexion | Liaison native créée une seule fois, même compte retrouvé |
+| Ancien compte Shopify déjà dans `users` | Identifiant et relation métier conservés, liaison native ajoutée au premier login |
+| Code non préparé, autre navigateur, mauvaise origine ou callback différent | Refusés par l'endpoint OAuth natif |
+| Code préparé expiré, mauvais verifier PKCE et rejeu | Refusés |
+| Compte existant dans l'en-tête Authorization | Ne devient pas une cible de liaison implicite |
+| Profil falsifié dans `createData` | Identité et e-mail imposés par Shopify ; impossible de forcer `verified` ou un mot de passe choisi par le client |
+| Credentials Shopify dans les métadonnées OAuth | Access token, refresh token et ID token non exposés |
+| Autres fournisseurs et politiques d'auth | Conservés lors de la configuration Shopify |
 
 Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE et, lorsque configuré, le secret du client confidential. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
 
@@ -85,7 +99,28 @@ Résultat final de govulncheck : zéro vulnérabilité atteignable détectée et
 
 Le contrôle a été relancé après l'alignement PocketBase, avec le même résultat. `npm audit --json` dans `integration` ne signale aucune vulnérabilité. Le SHA-256 du SDK servi au navigateur correspond à celui du fichier distribué par le paquet npm officiel installé.
 
-## Alignement PocketBase et API
+## Fournisseur OAuth2 natif
+
+Le 15 octobre 2026, la version `bin/studio-oauth2.exe` a remplacé le serveur précédent sur le port local `8090`, sans changer le tunnel, la gateway ni le callback Shopify. Aucun redéploiement d'app Shopify n'était nécessaire. Une sauvegarde SQLite cohérente a été créée au préalable dans `pb_backups/before-native-oauth2-20261015.db`.
+
+Le navigateur appelle désormais `authWithOAuth2Code('shopify', …)` après contrôle du callback par le serveur. Le fournisseur échange le vrai code Shopify dans le traitement natif `auth-with-oauth2`. La création du compte et de la liaison `_externalAuths` appartient à PocketBase, avec ses hooks OAuth2 et de création. Le SDK officiel a été testé contre cet endpoint avec un fournisseur Shopify simulé, un sujet numérique, des champs `createData` falsifiés et un rejeu du code. Les tests de règles d'accès, MFA et realtime précédents passent aussi par ce nouveau parcours.
+
+Contrôles distants après déploiement :
+
+| Contrôle | Résultat |
+| --- | --- |
+| `/studio?checked=1`, `/studio/callback.js` et SDK local | HTTP 200 |
+| `/api/collections/users/auth-methods` | Fournisseur `shopify` présent, aucun secret de configuration exposé |
+| Appel OAuth depuis une origine étrangère | HTTP 403 |
+| Admin `/_/` et paramètres `/api/settings` | HTTP 404 |
+
+L'utilisateur a ouvert explicitement `/studio/auth` et confirmé son profil avec « API PocketBase : accès confirmé avec le SDK officiel. ». Ce test force un nouveau parcours Shopify, au lieu de réutiliser seulement le cookie PocketBase déjà présent.
+
+Une lecture locale en comparaison avec la sauvegarde a confirmé un compte Shopify avant et après, le même identifiant, et une liaison native `shopify` dont le `providerId` correspond au hash émetteur/sujet attendu. Aucune donnée personnelle ou valeur de token n'a été affichée.
+
+L'ancienne limite concernant l'absence de hooks OAuth2 et de création est donc levée. Restent distincts : l'extraction en module Go installable, l'interface MFA, l'envoi réel des alertes et la synchronisation des déconnexions Shopify/PocketBase. Les sessions restent indépendantes.
+
+## Historique de l'alignement PocketBase et API
 
 Cette étape a été déployée sur le même tunnel le 15 octobre 2026 avec `bin/studio-native.exe` et `bin/gateway-native.exe`. Les compilations, les tests complets avec le SDK JavaScript et `go vet` passent.
 
@@ -106,7 +141,7 @@ Dans son navigateur connecté à la vraie boutique, l'utilisateur a confirmé le
 
 Les deux anciens comptes de démonstration dans `studio_customers` ont été conservés. Un compte lié à la vraie boutique est maintenant présent dans `users`. La sauvegarde cohérente précédant l'évolution du schéma est `pb_backups/before-native-auth-20261015.db`, ignorée par Git. Ces contrôles n'affichent ni données personnelles ni jetons.
 
-Limites : le parcours Shopify reste distinct de `authWithOAuth2`, et les hooks spécifiques à cet endpoint natif ne sont pas déclenchés. Le moteur MFA est testé, mais son interface de saisie et l'envoi réel des alertes ne le sont pas. La session PocketBase peut maintenant être renouvelée indépendamment de la session Shopify. Les détails d'intégration sont dans le [guide](README.md#intégrer-le-code-au-studio-existant).
+À cette étape intermédiaire, le parcours Shopify restait distinct de l'endpoint OAuth2 natif. La section précédente décrit le remplacement par `authWithOAuth2Code`. Le moteur MFA était déjà testé, mais pas son interface de saisie ni l'envoi réel des alertes. Les détails d'intégration actuels sont dans le [guide](README.md#intégrer-le-code-au-studio-existant).
 
 ## Historique de validation Shopify et vérifications restantes
 

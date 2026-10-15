@@ -25,6 +25,7 @@ const Email = "camille@example.test"
 type authorization struct{ Challenge, Nonce string }
 type Mock struct {
 	BaseURL, Callback, Secret, Fault string
+	ProfileEmail, Subject            string // Optional fixture overrides, never used against Shopify.
 	key                              *rsa.PrivateKey
 	mu                               sync.Mutex
 	codes                            map[string]authorization
@@ -78,7 +79,11 @@ func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			respond(w, map[string]any{"errors": []any{map[string]string{"message": "customer permission denied"}}})
 			return
 		}
-		respond(w, map[string]any{"data": map[string]any{"customer": map[string]any{"id": "gid://shopify/Customer/12345", "firstName": "Camille", "lastName": "Martin", "emailAddress": map[string]string{"emailAddress": Email}}}})
+		email := m.ProfileEmail
+		if email == "" {
+			email = Email
+		}
+		respond(w, map[string]any{"data": map[string]any{"customer": map[string]any{"id": "gid://shopify/Customer/12345", "firstName": "Camille", "lastName": "Martin", "emailAddress": map[string]string{"emailAddress": email}}}})
 	case "/login":
 		if r.Method != "POST" {
 			http.Error(w, "POST required", 405)
@@ -139,6 +144,10 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := r.Form.Get("client_id")
+	if m.Secret == "" && (r.Form.Get("client_secret") != "" || r.Header.Get("Authorization") != "") {
+		http.Error(w, "public clients must not send a secret", 400)
+		return
+	}
 	if m.Secret != "" {
 		id, secret, ok := r.BasicAuth()
 		if !ok || secret != m.Secret {
@@ -162,6 +171,12 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	c := jwt.MapClaims{"iss": m.BaseURL + "/identity", "sub": "shopify-customer-sub-12345", "aud": ClientID, "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "nonce": a.Nonce, "email": Email, "email_verified": true}
+	if m.ProfileEmail != "" {
+		c["email"] = m.ProfileEmail
+	}
+	if m.Subject != "" {
+		c["sub"] = m.Subject
+	}
 	fault := m.Fault
 	if strings.HasPrefix(fault, "numeric:") {
 		c["sub"] = json.Number("900719925474099312345")
