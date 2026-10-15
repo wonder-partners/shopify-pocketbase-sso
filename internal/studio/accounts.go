@@ -14,7 +14,7 @@ const accountsCollectionName = "_shopifyAccounts"
 var legacyIdentityFields = []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"}
 
 // The underscore is a naming convention, not an access-control mechanism.
-// Locked API rules make this a server-managed base collection, not an auth one.
+// Locked API rules protect the records; System groups and protects the schema.
 func ensureAccountsCollection(app core.App, users *core.Collection) error {
 	c, err := app.FindCollectionByNameOrId(accountsCollectionName)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -22,6 +22,7 @@ func ensureAccountsCollection(app core.App, users *core.Collection) error {
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		c = core.NewBaseCollection(accountsCollectionName)
+		c.System = true
 		c.Fields.Add(&core.RelationField{Name: "user", CollectionId: users.Id, MaxSelect: 1, Required: true, CascadeDelete: true})
 		for _, field := range []string{"issuer", "subject", "customerId"} {
 			c.Fields.Add(&core.TextField{Name: field, Required: true, Max: 1000})
@@ -43,7 +44,17 @@ func ensureAccountsCollection(app core.App, users *core.Collection) error {
 	c.ListRule, c.ViewRule, c.CreateRule, c.UpdateRule, c.DeleteRule = nil, nil, nil, nil, nil
 	c.AddIndex("idx_"+c.Id+"_identity", true, "issuer, subject", "")
 	c.AddIndex("idx_"+c.Id+"_user_issuer", true, "user, issuer", "")
-	return app.Save(c)
+	if err := app.Save(c); err != nil {
+		return err
+	}
+	if !c.System {
+		// PocketBase disallows changing System through normal validation.
+		// Validate/save the complete schema first, then promote only this flag.
+		// The caller's transaction keeps the upgrade atomic and preserves ids.
+		c.System = true
+		return app.SaveNoValidate(c)
+	}
+	return nil
 }
 
 func putAccount(app core.App, user, issuer, subject, customerID string) error {

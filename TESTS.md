@@ -17,7 +17,7 @@ node --check integration/sdk.mjs
 node --check integration/oauth.mjs
 ```
 
-Résultat : succès, 44 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 86,0 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
+Résultat : succès, 45 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 85,9 %, et 3 groupes de tests des migrations avec une couverture de 81,8 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
 
 Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test, y compris `authWithOAuth2Code`. Sans `RUN_JS_SDK_TEST=1`, ces tests sont ignorés ; les autres tests Go restent exécutés.
 
@@ -76,13 +76,31 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Ligne privée absente mais liaison OAuth native exacte présente | Ligne privée reconstruite, même utilisateur |
 | Ligne privée et liaison native désignant deux utilisateurs différents | Connexion refusée |
 | Suppression d'un utilisateur | Identité Shopify privée supprimée par cascade |
-| Prénom et nom Shopify `null`, puis renseignés | Connexion acceptée sans noms inventés ; même utilisateur enrichi à la connexion OAuth suivante |
+| Profil Shopify limité à l'identifiant et à l'e-mail | Connexion acceptée, aucun champ de nom ajouté ni synchronisé par le package d'auth |
+| Champs de nom propres à un projet hôte | Conservés par le package lors du démarrage et des reconnexions Shopify |
+| Promotion d'une ancienne `_shopifyAccounts` ordinaire en système | Même collection et même enregistrement après deux démarrages, même compte à la connexion OAuth |
+| Schéma système | Suppression, renommage et ouverture des règles refusés par PocketBase |
+| Migration ponctuelle de suppression des noms | Compte, session, mot de passe, champs personnalisés et règles conservés ; nouveau champ créé ensuite non supprimé au redémarrage |
+| Nettoyage des noms avec règle dépendante ou type incompatible | Migration refusée sans suppression partielle des champs |
+| Nettoyage sur installation neuve | Aucune collection ni aucun champ créés |
 
 Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE et, lorsque configuré, le secret du client confidential. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
 
 Le serveur simulé est sous notre contrôle. Ces tests vérifient le comportement du client et de PocketBase face au contrat simulé ; ils ne constituent pas un test des serveurs Shopify.
 
-## Stockage privé des identités Shopify
+## Collection système et suppression des noms
+
+Le 15 octobre 2026, `bin/studio-system.exe` a remplacé `bin/studio-private.exe` sur le port `8090`. La sauvegarde SQLite cohérente `pb_backups/before-system-email-only-20261015.db` a été créée avant le changement. Le tunnel, la gateway, le client Shopify et son callback sont inchangés.
+
+Le démarrage applique la migration Go native `1792095899_remove_profile_names.go`, qui supprime les champs `first_name` et `last_name` de la collection d'auth configurée, puis journalise son exécution. Le code d'auth ne les recrée plus et ne demande plus `firstName` ou `lastName` à Shopify. La nouvelle requête limitée à l'identifiant et à l'e-mail a été validée contre le schéma Customer Account API `2026-10`.
+
+Une comparaison locale avec la sauvegarde confirme : les deux champs supprimés, la collection `_shopifyAccounts` passée à `system: true` sans changement d'identifiant, les comptes privés et les liaisons `_externalAuths` inchangés, et les identifiants, e-mails, mots de passe, indicateurs de vérification et clés de session des utilisateurs inchangés. Le journal de migration contient le nettoyage. Le contrôle SQLite `quick_check` retourne `ok`.
+
+Le code de l'admin embarqué dans PocketBase `0.40.5` classe les collections portant cet attribut dans **System**, hors de la liste normale et repliées par défaut. Les collections épinglées gardent leur groupe **Pinned**. Le statut système n'enlève pas au superuser le droit de consulter leurs enregistrements. Après déploiement, le studio et ses méthodes d'auth répondent HTTP 200 ; la collection privée, l'admin et les paramètres restent bloqués sur le tunnel. PocketBase refuse toujours la lecture directe de la collection privée sans authentification avec HTTP 403.
+
+Le parcours OAuth complet est validé par les tests HTTP et le SDK officiel contre le serveur Shopify simulé. Cette dernière version n'a pas encore fait l'objet d'une nouvelle confirmation de connexion sur la boutique réelle ; les identités et credentials locaux nécessaires ont été vérifiés comme inchangés.
+
+## Historique du stockage privé des identités Shopify
 
 Le 15 octobre 2026, `bin/studio-private.exe` a remplacé `bin/studio-oauth2.exe` sur le même port `8090`, sans changer le tunnel, la gateway ni le callback Shopify. La sauvegarde SQLite `pb_backups/before-private-accounts-20261015.db` a été créée avant la migration.
 
@@ -90,7 +108,7 @@ Une comparaison locale avec cette sauvegarde confirme : un utilisateur avant et 
 
 Après déploiement, le studio, le script de callback et les méthodes d'auth de `users` répondent HTTP 200. La collection privée est bloquée par la gateway publique avec HTTP 404 et par PocketBase directement avec HTTP 403 sans authentification. L'admin et les paramètres restent bloqués sur le tunnel.
 
-La requête de profil existante a été validée contre le schéma Customer Account API `2026-10`, qui expose bien `firstName` et `lastName` comme champs nullable. Le test des noms renseignés est validé sur le serveur simulé. Il reste à confirmer sur la boutique réelle après remplissage de la fiche client et nouvelle connexion par `/studio/auth`.
+À cette étape, la requête de profil demandait encore les noms nullable et le serveur simulé vérifiait leur synchronisation. Cette fonctionnalité a depuis été retirée à la demande de l'utilisateur, comme décrit dans la section précédente.
 
 ## Première démonstration locale, avant l'alignement API
 

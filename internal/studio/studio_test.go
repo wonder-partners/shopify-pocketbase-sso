@@ -205,7 +205,7 @@ func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
 				t.Fatal("missing native OAuth response")
 			}
 			token, record := f.session()
-			if record.Email() != mockshop.Email || record.GetString("first_name") != "Camille" || !record.Verified() {
+			if record.Email() != mockshop.Email || !record.Verified() {
 				t.Fatalf("wrong profile: %v", record.PublicExport())
 			}
 			if strings.Contains(callback.location, token) {
@@ -446,18 +446,33 @@ func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
 	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
-func TestNullableShopifyNamesAreSynchronizedOnNextOAuthLogin(t *testing.T) {
-	f := setup(t, "", "names_empty")
+func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
+	f := setup(t, "", "")
+	c, _ := f.app.FindCollectionByNameOrId("users")
+	if c.Fields.GetByName("first_name") != nil || c.Fields.GetByName("last_name") != nil {
+		t.Fatal("Shopify integration added unwanted name fields")
+	}
 	f.loginStudio()
 	_, before := f.session()
-	if before.GetString("first_name") != "" || before.GetString("last_name") != "" {
-		t.Fatal("missing Shopify names must not be invented")
+	// A host project may still define its own names. They are not Shopify data
+	// and must survive setup and subsequent Shopify logins unchanged.
+	c.Fields.Add(&core.TextField{Name: "first_name"}, &core.TextField{Name: "last_name"})
+	if err := f.app.Save(c); err != nil {
+		t.Fatal(err)
 	}
-	f.mock.Fault = ""
+	before, _ = f.app.FindRecordById("users", before.Id)
+	before.Set("first_name", "LocalFirst")
+	before.Set("last_name", "LocalLast")
+	if err := f.app.Save(before); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCollection(f.app, "users"); err != nil {
+		t.Fatal(err)
+	}
 	f.loginStudio()
 	_, after := f.session()
-	if after.Id != before.Id || after.GetString("first_name") != "Camille" || after.GetString("last_name") != "Martin" {
-		t.Fatal("next OAuth login did not refresh the newly populated Shopify names")
+	if after.Id != before.Id || after.GetString("first_name") != "LocalFirst" || after.GetString("last_name") != "LocalLast" {
+		t.Fatal("Shopify changed the host project's own profile fields")
 	}
 }
 

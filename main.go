@@ -8,6 +8,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"studio-sso/internal/studio"
+	_ "studio-sso/migrations"
 )
 
 func main() {

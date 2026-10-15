@@ -3,7 +3,6 @@ package studio
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -16,8 +15,8 @@ import (
 
 const collectionName = "users"
 
-// Keep only shared profile fields in the auth collection. Move old Shopify
-// fields transactionally before dropping them; preserve all user ids and rules.
+// Don't add profile fields to the host auth collection. Move old Shopify
+// identities transactionally; preserve all user ids and rules.
 func ensureCollection(app core.App, name string) error {
 	var target string
 	err := app.RunInTransaction(func(tx core.App) error {
@@ -31,14 +30,6 @@ func ensureCollection(app core.App, name string) error {
 		}
 		if !c.IsAuth() || c.Name == "_superusers" {
 			return errors.New("Shopify requires a non-superuser auth collection")
-		}
-		for _, field := range []string{"first_name", "last_name"} {
-			existing := c.Fields.GetByName(field)
-			if existing == nil {
-				c.Fields.Add(&core.TextField{Name: field, Max: 1000})
-			} else if existing.Type() != core.FieldTypeText {
-				return fmt.Errorf("Profile field %s must be a text field", field)
-			}
 		}
 		if err := tx.Save(c); err != nil {
 			return err
@@ -178,17 +169,12 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	if emailOwner != nil && (r == nil || emailOwner.Id != r.Id) {
 		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
 	}
-	values := map[string]any{
-		"email": p.profile.EmailAddress.Email, "first_name": p.profile.FirstName, "last_name": p.profile.LastName,
-	}
 	e.Set(trustedProfileKey, p)
 	if r == nil {
 		if e.CreateData == nil {
 			e.CreateData = map[string]any{}
 		}
-		for field, value := range values {
-			e.CreateData[field] = value
-		}
+		e.CreateData["email"] = p.profile.EmailAddress.Email
 		delete(e.CreateData, "verified")
 		delete(e.CreateData, "password")
 		delete(e.CreateData, "passwordConfirm")
@@ -197,9 +183,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		}
 	} else {
 		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
-		for field, value := range values {
-			r.Set(field, value)
-		}
+		r.SetEmail(p.profile.EmailAddress.Email)
 		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
 		if err := s.app.Save(r); err != nil {
 			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)

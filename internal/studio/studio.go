@@ -228,7 +228,6 @@ func (s *Service) home(e *core.RequestEvent) error {
 	data := map[string]string{}
 	if r != nil {
 		data["Email"] = r.Email()
-		data["Name"] = strings.TrimSpace(r.GetString("first_name") + " " + r.GetString("last_name"))
 	}
 	var b bytes.Buffer
 	if err := page.Execute(&b, data); err != nil {
@@ -265,7 +264,7 @@ var page = template.Must(template.New("studio").Parse(`<!doctype html>
 <title>Studio · connexion Shopify</title>
 <style>body{font:18px system-ui;max-width:680px;margin:12vh auto;padding:24px;line-height:1.6}a,button{color:#075e46}small{color:#555}button{font:inherit;padding:8px 16px}</style>
 <main><h1>Le studio</h1>{{if .Email}}
-<p>Connecté avec Shopify.</p><p>{{.Name}}<br>{{.Email}}</p>
+<p>Connecté avec Shopify.</p><p>{{.Email}}</p>
 <p id="api-status">Vérification de l'accès à l'API PocketBase…</p><script type="module" src="/studio/client.js"></script>
 <form method="post" action="/studio/logout"><p><button>Se déconnecter du studio</button></p></form>
 {{else}}<p>Connecte-toi avec ton compte de la boutique pour ouvrir le studio.</p>

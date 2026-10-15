@@ -147,7 +147,7 @@ func TestPrivateAccountsAreNotPublicThroughRecordsOrExpansion(t *testing.T) {
 	token, user := f.session()
 	a := privateAccount(f, user.Id)
 	c := a.Collection()
-	if !c.IsBase() || c.ListRule != nil || c.ViewRule != nil || c.CreateRule != nil || c.UpdateRule != nil || c.DeleteRule != nil {
+	if !c.IsBase() || !c.System || c.ListRule != nil || c.ViewRule != nil || c.CreateRule != nil || c.UpdateRule != nil || c.DeleteRule != nil {
 		t.Fatal("private Shopify collection has a public API rule")
 	}
 	for _, collection := range []string{c.Name, c.Id} {
@@ -166,6 +166,45 @@ func TestPrivateAccountsAreNotPublicThroughRecordsOrExpansion(t *testing.T) {
 		if strings.Contains(body, a.GetString("subject")) || strings.Contains(body, a.GetString("customerId")) {
 			t.Fatal("raw Shopify identifier leaked in OAuth, profile expansion or HTML")
 		}
+	}
+}
+
+func TestExistingPrivateAccountsArePromotedToSystemWithoutRecreation(t *testing.T) {
+	f := setup(t, "", "")
+	f.loginStudio()
+	_, user := f.session()
+	a := privateAccount(f, user.Id)
+	c := a.Collection()
+	collectionID, accountID := c.Id, a.Id
+	// Reproduce the previous prototype's ordinary private base collection.
+	c.System = false
+	if err := f.app.SaveNoValidate(c); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ensureCollection(f.app, "users"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, _ = f.app.FindCollectionByNameOrId(accountsCollectionName)
+	if !c.System || c.Id != collectionID || privateAccount(f, user.Id).Id != accountID {
+		t.Fatal("promotion recreated the collection or lost its account")
+	}
+	// The normal schema API/Save protections must apply after promotion.
+	if err := f.app.Delete(c); err == nil {
+		t.Fatal("system collection could be deleted")
+	}
+	c.Name = "renamedShopifyAccounts"
+	if err := f.app.Save(c); err == nil {
+		t.Fatal("system collection could be renamed")
+	}
+	c.Name = accountsCollectionName
+	c.ListRule = types.Pointer("")
+	if err := f.app.Save(c); err == nil {
+		t.Fatal("system collection API rule could be opened")
+	}
+	if result := decodeAuth(t, f.loginStudio()); result.Record["id"] != user.Id {
+		t.Fatal("promotion changed the authenticated account")
 	}
 }
 

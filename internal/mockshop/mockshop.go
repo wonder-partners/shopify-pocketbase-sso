@@ -83,10 +83,7 @@ func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if email == "" {
 			email = Email
 		}
-		customer := map[string]any{"id": "gid://shopify/Customer/12345", "firstName": "Camille", "lastName": "Martin", "emailAddress": map[string]string{"emailAddress": email}}
-		if m.Fault == "names_empty" {
-			customer["firstName"], customer["lastName"] = nil, nil
-		}
+		customer := map[string]any{"id": "gid://shopify/Customer/12345", "emailAddress": map[string]string{"emailAddress": email}}
 		respond(w, map[string]any{"data": map[string]any{"customer": customer}})
 	case "/login":
 		if r.Method != "POST" {

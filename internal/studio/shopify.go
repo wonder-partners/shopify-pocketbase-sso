@@ -36,8 +36,6 @@ type discovery struct {
 
 type customer struct {
 	ID           string `json:"id"`
-	FirstName    string `json:"firstName"`
-	LastName     string `json:"lastName"`
 	EmailAddress *struct {
 		Email string `json:"emailAddress"`
 	} `json:"emailAddress"`
@@ -162,7 +160,7 @@ func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) (
 }
 
 func (s *Service) fetchCustomer(ctx context.Context, accessToken string) (*customer, error) {
-	body, _ := json.Marshal(map[string]string{"query": `query StudioCustomer { customer { id firstName lastName emailAddress { emailAddress } } }`})
+	body, _ := json.Marshal(map[string]string{"query": `query StudioCustomer { customer { id emailAddress { emailAddress } } }`})
 	req, _ := http.NewRequestWithContext(ctx, "POST", s.graphql, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// Shopify Customer Account API uses the raw token here, without "Bearer".
