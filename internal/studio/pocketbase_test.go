@@ -197,15 +197,12 @@ func TestExistingAuthCollectionPoliciesArePreserved(t *testing.T) {
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCollection(f.app, "users"); err != nil {
+	if err := ensureCollection(f.app); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, _ := f.app.FindCollectionByNameOrId("users")
 	if reloaded.AuthToken.Duration != 1200 || !reloaded.OTP.Enabled || !reloaded.PasswordAuth.Enabled || *reloaded.AuthRule != *c.AuthRule || *reloaded.UpdateRule != *c.UpdateRule {
 		t.Fatal("Shopify setup overwrote the application's auth policies")
-	}
-	if ensureCollection(f.app, "_superusers") == nil {
-		t.Fatal("Shopify must never authenticate superusers")
 	}
 }
 

@@ -24,6 +24,50 @@ func nativeOAuthBody(t *testing.T, data map[string]string) string {
 	return string(body)
 }
 
+func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
+	// A leftover setting from the prototype must not redirect authentication.
+	t.Setenv("STUDIO_AUTH_COLLECTION", "members")
+	f := setup(t, "", "")
+	members := core.NewAuthCollection("members")
+	if err := f.app.Save(members); err != nil {
+		t.Fatal(err)
+	}
+	superusers, err := f.app.FindCollectionByNameOrId("_superusers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.loginShop()
+	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	f.expect(page, 200)
+	data := callbackData(t, page.body)
+	if data["collection"] != "users" {
+		t.Fatal("callback targeted a collection other than users")
+	}
+	body := nativeOAuthBody(t, data)
+	for _, target := range []string{members.Name, members.Id, superusers.Name, superusers.Id} {
+		f.expect(f.request("POST", f.studio.URL+"/api/collections/"+target+"/auth-with-oauth2", f.studio.URL, body, ""), 403)
+	}
+	users, _ := f.app.FindCollectionByNameOrId("users")
+	result := f.request("POST", f.studio.URL+"/api/collections/"+users.Id+"/auth-with-oauth2", f.studio.URL, body, "")
+	f.expect(result, 200)
+	userID := decodeAuth(t, result).Record["id"].(string)
+	a := privateAccount(f, userID)
+	relation := a.Collection().Fields.GetByName("user").(*core.RelationField)
+	if relation.CollectionId != users.Id {
+		t.Fatal("private Shopify identity is not linked to users")
+	}
+	other := core.NewRecord(members)
+	other.SetEmail("other-collection@example.test")
+	other.SetPassword("TestPassword12345")
+	if err := f.app.Save(other); err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _ := other.NewAuthToken()
+	u, _ := url.Parse(f.studio.URL)
+	f.client.Jar.SetCookies(u, []*http.Cookie{{Name: f.s.cookieName("session"), Value: otherToken, Path: "/"}})
+	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
+}
+
 func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	f := setup(t, "", "numeric:")
 	oauthCalls, createCalls := 0, 0
@@ -201,7 +245,7 @@ func TestNativeOAuthPreservesPrototypeAccountAndRelations(t *testing.T) {
 	}
 	token, _ := legacy.NewAuthToken()
 	doc := createDocument(f, token, legacy.Id)
-	if err := ensureCollection(f.app, "users"); err != nil {
+	if err := ensureCollection(f.app); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeAuth(t, f.loginStudio())

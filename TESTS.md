@@ -17,7 +17,7 @@ node --check integration/sdk.mjs
 node --check integration/oauth.mjs
 ```
 
-Résultat : succès, 45 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 85,9 %, et 3 groupes de tests des migrations avec une couverture de 81,8 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
+Résultat : succès, 46 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 85,8 %, et 5 groupes de tests des migrations avec une couverture de 81,0 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
 
 Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test, y compris `authWithOAuth2Code`. Sans `RUN_JS_SDK_TEST=1`, ces tests sont ignorés ; les autres tests Go restent exécutés.
 
@@ -68,7 +68,7 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Profil falsifié dans `createData` | Identité et e-mail imposés par Shopify ; impossible de forcer `verified` ou un mot de passe choisi par le client |
 | Credentials Shopify dans les métadonnées OAuth | Access token, refresh token et ID token non exposés |
 | Autres fournisseurs et politiques d'auth | Conservés lors de la configuration Shopify |
-| Migration vers `_shopifyAccounts`, puis second démarrage | Identifiants bruts, utilisateur, relation métier et liaison OAuth native conservés ; aucun doublon |
+| Migration vers `_shopifyIdentities`, puis second démarrage | Identifiants bruts, utilisateur, relation métier et liaison OAuth native conservés ; aucun doublon |
 | Ancienne identité incomplète, schéma partiel, identité en conflit ou règle dépendant d'un ancien champ | Migration refusée, anciennes données et règles conservées, copie privée annulée |
 | API privée par nom et identifiant de collection, avec et sans jeton utilisateur | Liste, lecture, création, modification et suppression refusées |
 | Expansion inverse depuis `users`, réponses OAuth et page HTML | Aucun identifiant Shopify brut exposé |
@@ -78,17 +78,34 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Suppression d'un utilisateur | Identité Shopify privée supprimée par cascade |
 | Profil Shopify limité à l'identifiant et à l'e-mail | Connexion acceptée, aucun champ de nom ajouté ni synchronisé par le package d'auth |
 | Champs de nom propres à un projet hôte | Conservés par le package lors du démarrage et des reconnexions Shopify |
-| Promotion d'une ancienne `_shopifyAccounts` ordinaire en système | Même collection et même enregistrement après deux démarrages, même compte à la connexion OAuth |
+| Promotion d'une collection d'identités ordinaire en système | Même collection et même enregistrement après deux démarrages, même compte à la connexion OAuth |
 | Schéma système | Suppression, renommage et ouverture des règles refusés par PocketBase |
 | Migration ponctuelle de suppression des noms | Compte, session, mot de passe, champs personnalisés et règles conservés ; nouveau champ créé ensuite non supprimé au redémarrage |
 | Nettoyage des noms avec règle dépendante ou type incompatible | Migration refusée sans suppression partielle des champs |
 | Nettoyage sur installation neuve | Aucune collection ni aucun champ créés |
+| Ancienne variable `STUDIO_AUTH_COLLECTION=members` | Ignorée par le flux de connexion ; le callback cible `users` |
+| Tentative OAuth sur une autre collection ou `_superusers`, par nom et identifiant | HTTP 403 ; le même code reste utilisable uniquement sur `users` |
+| Cookie portant un jeton valide d'une autre collection d'auth | Refusé par la session du studio |
+| Renommage `_shopifyAccounts` vers `_shopifyIdentities`, et opération inverse | Même collection, enregistrements, identifiants exacts, relations et index d'unicité |
+| Renommage avec les deux noms présents, une source publique ou du mauvais type | Refus sans suppression ni fusion |
 
 Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE et, lorsque configuré, le secret du client confidential. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
 
 Le serveur simulé est sous notre contrôle. Ces tests vérifient le comportement du client et de PocketBase face au contrat simulé ; ils ne constituent pas un test des serveurs Shopify.
 
-## Collection système et suppression des noms
+## Identités Shopify et collection `users` fixe
+
+Le 15 octobre 2026, `bin/studio-identities.exe` a remplacé `bin/studio-system.exe` sur le port `8090`, après sauvegarde SQLite cohérente dans `pb_backups/before-identities-users-only-20261015.db`. Le tunnel, la gateway et le callback Shopify sont inchangés.
+
+La configuration active ne contient plus `Config.AuthCollection` ni la lecture de `STUDIO_AUTH_COLLECTION` : le parcours cible uniquement `users`. Les anciennes migrations appliquées restent inchangées, y compris leur configuration historique de nettoyage, qui ne choisit pas la cible de connexion.
+
+La nouvelle migration Go native `1792097400_rename_shopify_identities.go` a renommé `_shopifyAccounts` en `_shopifyIdentities`. La comparaison locale avec la sauvegarde confirme le même identifiant de collection, les mêmes enregistrements privés avec tous leurs identifiants bruts, la relation vers `users`, et des tables `users` et `_externalAuths` strictement inchangées. L'ancienne table a disparu par renommage, le statut système et les cinq règles verrouillées sont conservés, et la migration figure dans le journal. SQLite `quick_check` retourne `ok`.
+
+Après déploiement, le studio et les méthodes d'auth de `users` répondent HTTP 200. Les deux noms de collection privée, l'admin et les paramètres restent bloqués sur le tunnel avec HTTP 404. En accès local direct sans authentification, le nouveau nom retourne HTTP 403 et l'ancien HTTP 404.
+
+Le parcours complet est testé avec le SDK officiel contre le serveur Shopify simulé. Aucune nouvelle connexion sur la boutique réelle n'a encore été confirmée pour cette dernière version.
+
+## Historique de la collection système et de la suppression des noms
 
 Le 15 octobre 2026, `bin/studio-system.exe` a remplacé `bin/studio-private.exe` sur le port `8090`. La sauvegarde SQLite cohérente `pb_backups/before-system-email-only-20261015.db` a été créée avant le changement. Le tunnel, la gateway, le client Shopify et son callback sont inchangés.
 

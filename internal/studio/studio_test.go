@@ -466,7 +466,7 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 	if err := f.app.Save(before); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCollection(f.app, "users"); err != nil {
+	if err := ensureCollection(f.app); err != nil {
 		t.Fatal(err)
 	}
 	f.loginStudio()

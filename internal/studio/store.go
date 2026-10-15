@@ -17,19 +17,18 @@ const collectionName = "users"
 
 // Don't add profile fields to the host auth collection. Move old Shopify
 // identities transactionally; preserve all user ids and rules.
-func ensureCollection(app core.App, name string) error {
-	var target string
+func ensureCollection(app core.App) error {
 	err := app.RunInTransaction(func(tx core.App) error {
-		c, err := tx.FindCollectionByNameOrId(name)
+		c, err := tx.FindCollectionByNameOrId(collectionName)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if errors.Is(err, sql.ErrNoRows) {
-			c = core.NewAuthCollection(name)
+			c = core.NewAuthCollection(collectionName)
 			c.ViewRule = types.Pointer("id = @request.auth.id")
 		}
-		if !c.IsAuth() || c.Name == "_superusers" {
-			return errors.New("Shopify requires a non-superuser auth collection")
+		if !c.IsAuth() || c.Name != collectionName {
+			return errors.New("Shopify requires the users auth collection")
 		}
 		if err := tx.Save(c); err != nil {
 			return err
@@ -40,7 +39,6 @@ func ensureCollection(app core.App, name string) error {
 		if err := migrateLegacyAccounts(tx, c); err != nil {
 			return err
 		}
-		target = c.Name
 		return nil
 	})
 	if err != nil {
@@ -62,17 +60,16 @@ func ensureCollection(app core.App, name string) error {
 		}
 		return e.Next()
 	}
-	app.OnRecordCreateRequest(target).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
-	app.OnRecordUpdateRequest(target).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
+	app.OnRecordCreateRequest(collectionName).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
+	app.OnRecordUpdateRequest(collectionName).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
 	return nil
 }
 
 func (s *Service) configureProvider() error {
-	c, err := s.app.FindCollectionByNameOrId(s.cfg.AuthCollection)
+	c, err := s.app.FindCollectionByNameOrId(collectionName)
 	if err != nil {
 		return err
 	}
-	s.cfg.AuthCollection = c.Name
 	secret := s.cfg.ClientSecret
 	if secret == "" {
 		// PocketBase v0.40.5 requires a non-empty config field even for public
@@ -132,7 +129,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	var r *core.Record
 	if a != nil {
-		r, err = s.app.FindRecordById(s.cfg.AuthCollection, a.GetString("user"))
+		r, err = s.app.FindRecordById(collectionName, a.GetString("user"))
 		if err != nil {
 			return err
 		}
@@ -151,7 +148,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		if r != nil && r.Id != link.RecordRef() {
 			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
 		}
-		r, err = s.app.FindRecordById(s.cfg.AuthCollection, link.RecordRef())
+		r, err = s.app.FindRecordById(collectionName, link.RecordRef())
 		if err != nil {
 			return err
 		}
@@ -162,7 +159,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	if r != nil {
 		e.Record, e.IsNewRecord = r, false
 	}
-	emailOwner, err := s.app.FindAuthRecordByEmail(s.cfg.AuthCollection, p.profile.EmailAddress.Email)
+	emailOwner, err := s.app.FindAuthRecordByEmail(collectionName, p.profile.EmailAddress.Email)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

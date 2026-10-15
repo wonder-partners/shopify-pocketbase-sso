@@ -144,7 +144,7 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if err != nil {
 		return e.BadRequestError("Missing login cookie.", nil)
 	}
-	c, err := s.app.FindCollectionByNameOrId(s.cfg.AuthCollection)
+	c, err := s.app.FindCollectionByNameOrId(collectionName)
 	if err != nil {
 		return err
 	}

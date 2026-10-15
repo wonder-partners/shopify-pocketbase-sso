@@ -60,7 +60,7 @@ func TestPrivateAccountsMigrationPreservesIdentityAndNativeLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 { // Migration must also be safe on subsequent startups.
-		if err := ensureCollection(f.app, "users"); err != nil {
+		if err := ensureCollection(f.app); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -125,7 +125,7 @@ func TestPrivateAccountsMigrationRollsBackInvalidLegacyData(t *testing.T) {
 				}
 			}
 			before, _ := f.app.CountRecords(accountsCollectionName)
-			if err := ensureCollection(f.app, "users"); err == nil {
+			if err := ensureCollection(f.app); err == nil {
 				t.Fatal("unsafe legacy migration unexpectedly succeeded")
 			}
 			c, _ = f.app.FindCollectionByNameOrId("users")
@@ -160,7 +160,7 @@ func TestPrivateAccountsAreNotPublicThroughRecordsOrExpansion(t *testing.T) {
 			f.expect(f.request("DELETE", base+"/"+a.Id, "", "", auth), 403)
 		}
 	}
-	profile := f.request("GET", f.studio.URL+"/api/collections/users/records/"+user.Id+"?expand=_shopifyAccounts_via_user", "", "", token)
+	profile := f.request("GET", f.studio.URL+"/api/collections/users/records/"+user.Id+"?expand=_shopifyIdentities_via_user", "", "", token)
 	f.expect(profile, 200)
 	for _, body := range []string{result.body, profile.body, f.request("GET", f.studio.URL+"/studio", "", "", "").body} {
 		if strings.Contains(body, a.GetString("subject")) || strings.Contains(body, a.GetString("customerId")) {
@@ -182,7 +182,7 @@ func TestExistingPrivateAccountsArePromotedToSystemWithoutRecreation(t *testing.
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := ensureCollection(f.app, "users"); err != nil {
+		if err := ensureCollection(f.app); err != nil {
 			t.Fatal(err)
 		}
 	}

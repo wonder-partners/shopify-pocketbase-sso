@@ -22,7 +22,6 @@ type Config struct {
 	StudioURL         string
 	ClientID          string
 	ClientSecret      string // Optional: leave empty for a public client with PKCE.
-	AuthCollection    string // Defaults to the application's users auth collection.
 	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
 }
 

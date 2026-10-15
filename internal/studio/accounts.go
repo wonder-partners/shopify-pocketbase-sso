@@ -9,7 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-const accountsCollectionName = "_shopifyAccounts"
+const accountsCollectionName = "_shopifyIdentities"
 
 var legacyIdentityFields = []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"}
 
@@ -29,16 +29,16 @@ func ensureAccountsCollection(app core.App, users *core.Collection) error {
 		}
 	}
 	if !c.IsBase() {
-		return errors.New("_shopifyAccounts must be a base collection")
+		return errors.New("_shopifyIdentities must be a base collection")
 	}
 	relation, ok := c.Fields.GetByName("user").(*core.RelationField)
 	if !ok || relation.CollectionId != users.Id || relation.MaxSelect != 1 || !relation.Required || !relation.CascadeDelete {
-		return errors.New("_shopifyAccounts.user must be a required cascading relation to the configured auth collection")
+		return errors.New("_shopifyIdentities.user must be a required cascading relation to users")
 	}
 	for _, field := range []string{"issuer", "subject", "customerId"} {
 		f, ok := c.Fields.GetByName(field).(*core.TextField)
 		if !ok || !f.Required {
-			return fmt.Errorf("_shopifyAccounts.%s must be a required text field", field)
+			return fmt.Errorf("_shopifyIdentities.%s must be a required text field", field)
 		}
 	}
 	c.ListRule, c.ViewRule, c.CreateRule, c.UpdateRule, c.DeleteRule = nil, nil, nil, nil, nil

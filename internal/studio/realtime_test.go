@@ -58,7 +58,7 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 				t.Fatal("realtime connect timed out")
 			}
 			account := privateAccount(f, shop.Id)
-			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyAccounts/*","_shopifyAccounts/` + account.Id + `"]}`
+			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyIdentities/*","_shopifyIdentities/` + account.Id + `"]}`
 			f.expect(f.request("POST", f.studio.URL+"/api/realtime", "", body, token), 204)
 			account.Set("customerId", "gid://shopify/Customer/67890")
 			if err := f.app.Save(account); err != nil {

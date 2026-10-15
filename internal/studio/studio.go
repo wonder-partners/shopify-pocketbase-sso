@@ -50,9 +50,6 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if cfg.ClientID == "" {
 		return nil, errors.New("SHOPIFY_CUSTOMER_CLIENT_ID is required")
 	}
-	if cfg.AuthCollection == "" {
-		cfg.AuthCollection = collectionName
-	}
 	s := &Service{app: app, cfg: cfg, pending: map[string]pending{}, ready: map[string]pending{}, client: &http.Client{
 		Timeout: 10 * time.Second, Transport: shopTransport{origin: cfg.StudioURL},
 		// A redirect must not leak access tokens to another endpoint.
@@ -61,7 +58,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if err := s.discover(ctx); err != nil {
 		return nil, err
 	}
-	if err := ensureCollection(app, cfg.AuthCollection); err != nil {
+	if err := ensureCollection(app); err != nil {
 		return nil, err
 	}
 	if err := s.configureProvider(); err != nil {
@@ -190,7 +187,7 @@ func (s *Service) callback(e *core.RequestEvent) error {
 	var b bytes.Buffer
 	err = callbackPage.Execute(&b, map[string]string{
 		"Code": q.Get("code"), "Verifier": p.Verifier,
-		"RedirectURL": s.oauth.RedirectURL, "Collection": s.cfg.AuthCollection,
+		"RedirectURL": s.oauth.RedirectURL, "Collection": collectionName,
 	})
 	if err != nil {
 		return err
@@ -204,7 +201,7 @@ func (s *Service) current(e *core.RequestEvent) (*core.Record, string) {
 		return nil, ""
 	}
 	r, err := s.app.FindAuthRecordByToken(c.Value, core.TokenTypeAuth)
-	if err != nil || r.Collection().Name != s.cfg.AuthCollection {
+	if err != nil || r.Collection().Name != collectionName {
 		return nil, ""
 	}
 	e.Auth = r
