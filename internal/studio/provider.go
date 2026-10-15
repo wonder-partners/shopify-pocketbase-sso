@@ -7,8 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
-	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase/core"
@@ -22,9 +23,11 @@ const trustedProfileKey = "studio_shopify_verified_profile"
 
 type providerContextKey struct{}
 type providerContext struct {
-	service *Service
-	browser string
+	service  *Service
+	verifier string
 }
+
+var pkceVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 
 // A factory must not capture a global shop/app: multiple PocketBase instances
 // can coexist. The native request context selects the service for this request.
@@ -54,30 +57,36 @@ func identityID(issuer, subject string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(issuer+"\x00"+subject)))
 }
 
-func (p *shopifyProvider) FetchToken(code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
+// PocketBase generates a fresh S256 challenge in listAuthMethods. Reuse that
+// random public value as the OIDC nonce, never the secret verifier. This lets
+// FetchToken check the nonce against the submitted verifier without server state.
+func (p *shopifyProvider) BuildAuthURL(state string, opts ...oauth2.AuthCodeOption) string {
+	u, err := url.Parse(p.BaseProvider.BuildAuthURL(state, opts...))
+	if err != nil {
+		return ""
+	}
+	q := u.Query()
+	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
+		return ""
+	}
+	q.Set("nonce", q.Get("code_challenge"))
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
 	flow, ok := p.Context().Value(providerContextKey{}).(providerContext)
-	if !ok || flow.service == nil || flow.browser == "" {
-		return nil, errors.New("start the Shopify OAuth flow before exchanging its code")
+	if !ok || flow.service == nil || !pkceVerifierPattern.MatchString(flow.verifier) {
+		return nil, errors.New("a native Shopify OAuth request with PKCE is required")
 	}
 	s := flow.service
 	if p.RedirectURL() != s.oauth.RedirectURL || p.ClientId() != s.cfg.ClientID {
 		return nil, errors.New("invalid Shopify client or redirect URL")
 	}
-	s.mu.Lock()
-	pending, found := s.ready[code]
-	if found && subtle.ConstantTimeCompare([]byte(pending.Browser), []byte(flow.browser)) == 1 {
-		delete(s.ready, code)
-	} else {
-		found = false
-	}
-	s.mu.Unlock()
-	if !found || time.Now().After(pending.Expires) {
-		return nil, errors.New("invalid or expired browser-bound Shopify code")
-	}
 	ctx := oidc.ClientContext(p.Context(), s.client)
 	// Use the configured public/confidential Shopify client, not PocketBase's
 	// mandatory config placeholder for public clients. Never send that placeholder.
-	token, err := s.oauth.Exchange(ctx, code, opts...)
+	token, err := s.oauth.Exchange(ctx, code, oauth2.VerifierOption(flow.verifier))
 	if err != nil {
 		return nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
 	}
@@ -88,7 +97,7 @@ func (p *shopifyProvider) FetchToken(code string, opts ...oauth2.AuthCodeOption)
 		s.app.Logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
 		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify ID token ("+reason+").", nil)
 	}
-	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(pending.Nonce)) != 1 || id.Subject == "" {
+	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(oauth2.S256ChallengeFromVerifier(flow.verifier))) != 1 || id.Subject == "" {
 		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify nonce or subject.", nil)
 	}
 	if id.AccessTokenHash != "" && id.VerifyAccessToken(token.AccessToken) != nil {
@@ -124,11 +133,16 @@ func (p *shopifyProvider) FetchAuthUser(token *oauth2.Token) (*auth.AuthUser, er
 }
 
 func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
+	if e.Request.Method == http.MethodGet && strings.HasPrefix(e.Request.URL.Path, "/api/collections/") && strings.HasSuffix(e.Request.URL.Path, "/auth-methods") {
+		// The native response contains a fresh PKCE verifier, not public metadata.
+		noStore(e)
+	}
 	if e.Request.Method != http.MethodPost || !strings.HasPrefix(e.Request.URL.Path, "/api/collections/") || !strings.HasSuffix(e.Request.URL.Path, "/auth-with-oauth2") {
 		return e.Next()
 	}
 	var body struct {
-		Provider string `json:"provider"`
+		Provider     string `json:"provider"`
+		CodeVerifier string `json:"codeVerifier"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return err
@@ -140,10 +154,6 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if err := s.requireOrigin(e); err != nil {
 		return err
 	}
-	cookie, err := e.Request.Cookie(s.flowCookieName())
-	if err != nil {
-		return e.BadRequestError("Missing login cookie.", nil)
-	}
 	c, err := s.app.FindCollectionByNameOrId(collectionName)
 	if err != nil {
 		return err
@@ -152,10 +162,9 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if len(parts) != 5 || (parts[3] != c.Name && parts[3] != c.Id) {
 		return e.ForbiddenError("Shopify is not configured for this auth collection.", nil)
 	}
-	e.Request = e.Request.WithContext(context.WithValue(e.Request.Context(), providerContextKey{}, providerContext{s, cookie.Value}))
-	return captureAuthResponse(e, func() error {
-		err := e.Next()
-		s.setFlowCookie(e, "", -1)
-		return err
-	})
+	if !pkceVerifierPattern.MatchString(body.CodeVerifier) {
+		return e.BadRequestError("A valid PKCE verifier is required.", nil)
+	}
+	e.Request = e.Request.WithContext(context.WithValue(e.Request.Context(), providerContextKey{}, providerContext{s, body.CodeVerifier}))
+	return captureAuthResponse(e, e.Next)
 }

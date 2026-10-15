@@ -1,115 +1,130 @@
 # Authentification Shopify dans PocketBase
 
-Le projet adapte les nouveaux comptes clients Shopify au fournisseur OAuth2 natif de PocketBase. La connexion se termine par `authWithOAuth2Code('shopify', ...)` du SDK officiel, qui reçoit un jeton PocketBase et alimente son auth store.
+L'intégration ajoute un fournisseur `shopify` au parcours OAuth2 natif de PocketBase. Le frontend utilise `listAuthMethods()`, redirige vers Shopify, vérifie le retour puis appelle `authWithOAuth2Code()`. Le SDK reçoit le token PocketBase et met son auth store à jour.
 
-Le code est en cours de nettoyage. Le module Go `studio-sso` et le package `internal/studio` restent à leur place : aucun packaging, dépôt distant ou publication n'est préparé à ce stade.
+Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucun packaging ni publication n'est préparé.
 
 ## Responsabilités
 
-- Shopify authentifie le client et fournit son identifiant et son e-mail.
-- PocketBase crée ou retrouve le compte `users`, conserve la liaison OAuth dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
-- L'adaptation Go sécurise le parcours Shopify et conserve les identifiants bruts dans `_shopifyIdentities`.
-- Le frontend hôte possède sa page de callback, sa navigation, ses messages et sa déconnexion locale. Le SDK gère `pb.authStore` et son stockage.
+- PocketBase génère le state, le verifier et le challenge PKCE via son endpoint natif `users/auth-methods`.
+- Le frontend conserve ces paramètres dans le `sessionStorage` de l'onglet, vérifie le state et son expiration au retour, puis les supprime avant tout échange.
+- Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère l'identifiant client et l'e-mail.
+- PocketBase crée ou retrouve le compte `users`, conserve la liaison dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
 
-Il n'y a plus de page HTML du studio, de SDK embarqué, de cookie de session personnalisé, de `/studio/session` ni de `/studio/logout`. Le cookie temporaire `shopify_oauth`, préfixé `__Host-` en HTTPS, sert uniquement à lier le parcours OAuth au navigateur. Sa durée est de cinq minutes ; il ne contient aucun jeton d'authentification.
+Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. L'intégration ne fournit aucune page HTML, aucun SDK embarqué et aucune API de session parallèle.
 
-La mémoire tampon autour de la réponse OAuth est conservée comme protection : si un hook refuse la connexion après `e.Next()`, aucun JWT précédemment écrit ne doit parvenir au client. Elle ne fabrique aucun jeton, n'ajoute aucun cookie de session et conserve les réponses natives, notamment les challenges MFA.
+Le state est désormais vérifié par le frontend, pas par le backend. La possession du verifier PKCE protège l'échange du code. Les codes à usage unique et leur expiration sont contrôlés par Shopify. Le délai de cinq minutes dans l'exemple est un contrôle local supplémentaire, pas une expiration imposée par notre serveur.
 
 ## Configuration et hôte Go
 
-`main.go` reste un hôte PocketBase minimal, sans interface de démonstration. Il initialise `studio.New` dans `OnServe`, puis appelle `Register` sur le routeur. La configuration active est :
+`main.go` reste un hôte PocketBase minimal. Il initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives.
 
-| Paramètre Go | Variable du programme principal | Rôle |
+| Paramètre Go | Variable d'environnement | Rôle |
 | --- | --- | --- |
 | `ShopURL` | `SHOPIFY_SHOP_URL` | Origine HTTPS de la boutique de confiance |
-| `RedirectURL` | `SHOPIFY_REDIRECT_URL` | URL complète de la page de callback du frontend, enregistrée dans Shopify |
-| `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Identifiant du client Customer Account API |
-| `ClientSecret` | `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Vide pour notre client public PKCE ; optionnel pour un client confidential |
-| `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement strictement limitée au loopback |
+| `RedirectURL` | `SHOPIFY_REDIRECT_URL` | Callback du frontend, enregistré à l'identique dans Shopify |
+| `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Client Customer Account API |
+| `ClientSecret` | `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Vide pour notre client public PKCE |
+| `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement limitée au loopback |
 
-`STUDIO_URL` n'est plus lu. L'origine autorisée est déduite de `RedirectURL`. Cette version exige un frontend et une API sur la même origine. Il ne suffit pas de changer cette URL pour prendre en charge un frontend sur un domaine tiers.
+Le frontend et l'API doivent conserver la même origine. Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre cet en-tête sans le réécrire.
 
-La collection d'auth est fixée à `users`. Elle doit déjà exister et être de type auth. L'intégration ne crée pas cette collection, n'y ajoute pas de champ et ne choisit pas ses règles d'accès. Elle active OAuth2 et ajoute ou met à jour uniquement le fournisseur `shopify`, sans modifier les autres fournisseurs ni les politiques mot de passe, OTP, MFA ou durée des jetons.
+La collection d'auth est fixée à `users` et doit exister. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens.
 
-La collection système `_shopifyIdentities` contient `user`, `issuer`, `subject` et `customerId`. Ses cinq règles API sont verrouillées. Les enregistrements restent accessibles au code serveur et aux superusers, pas aux utilisateurs par REST, expansion ou realtime. Les prénoms et noms ne sont ni demandés ni synchronisés.
+`_shopifyIdentities` est une collection système avec les champs `user`, `issuer`, `subject` et `customerId`. Ses cinq règles API sont verrouillées. Les identifiants bruts sont réservés au serveur et aux superusers. Les prénoms et noms ne sont ni demandés ni synchronisés.
 
-Les anciens nettoyages de schéma du prototype ne sont plus dans le cœur d'authentification. Les migrations historiques du dossier `migrations` sont conservées mais ne sont plus importées par `main.go` et ne s'exécutent pas à l'installation de l'adaptation. La base de test existante a déjà été migrée ; ne pas réutiliser ces migrations de nettoyage sur un autre projet.
+## Exemple frontend minimal
 
-## Contrat HTTP du frontend
-
-Deux endpoints JSON préparent la connexion. Ils ne constituent pas une API de session parallèle. Tous deux exigent un en-tête `Origin` correspondant à l'origine configurée et utilisent le cookie temporaire du même navigateur.
-
-### 1. Démarrer le parcours
-
-`POST /api/shopify/auth/start`, avec un corps JSON :
-
-```json
-{"silent": true}
-```
-
-La réponse est `{"url":"https://..."}`. Le frontend effectue lui-même une navigation de premier niveau vers cette URL. `silent: true` demande `prompt=none` à Shopify ; `false` permet une connexion interactive. Le serveur génère et conserve state, nonce et verifier PKCE.
-
-Exemple avec une instance existante du SDK :
+Dans un frontend avec bundler et le SDK officiel installé :
 
 ```javascript
-const { url } = await pb.send('/api/shopify/auth/start', {
-  method: 'POST',
-  body: { silent: true },
-});
-window.location.assign(url);
+import PocketBase from 'pocketbase';
+
+const pb = new PocketBase(window.location.origin);
+// Cette URL doit correspondre à SHOPIFY_REDIRECT_URL et au callback Shopify.
+const redirectURL = new URL('/studio/callback', window.location.origin).href;
 ```
 
-### 2. Vérifier le retour Shopify
+Les deux fonctions suivantes suffisent pour le passage OAuth. Elles appartiennent au frontend hôte ; aucun helper JavaScript n'est ajouté au backend Go.
 
-Shopify revient sur `RedirectURL`, une page fournie par le frontend hôte. Cette page doit extraire les paramètres puis les effacer de la barre d'adresse avant de charger d'autres ressources. Elle doit aussi empêcher la mise en cache et les fuites de référent de cette URL sensible.
-
-Le frontend transmet `state`, `code` et, en cas d'échec Shopify, `error` à `POST /api/shopify/auth/complete`. Le serveur vérifie le navigateur, le state et son expiration, puis prépare le code à usage unique. Il renvoie les arguments nécessaires au SDK, jamais un jeton PocketBase.
-
-En cas d'erreur OAuth attendue, la réponse JSON contient par exemple `{"error":"login_required"}`. L'application choisit alors d'afficher son lien de connexion ou de relancer un parcours interactif. L'adaptation ne choisit aucune page à sa place.
-
-### 3. Authentifier avec le SDK officiel
-
-Exemple de fonction appelée depuis la page de callback du frontend :
-
+<!-- native-redirect-example:start -->
 ```javascript
-async function finishShopifyLogin(pb) {
-  const query = new URLSearchParams(window.location.search);
-  history.replaceState(null, '', window.location.pathname);
-  const completion = await pb.send('/api/shopify/auth/complete', {
-    method: 'POST',
-    body: {
-      state: query.get('state') ?? '',
-      code: query.get('code') ?? '',
-      error: query.get('error') ?? '',
-    },
-  });
-  if (completion.error) return completion;
+async function loginWithShopify(silent = false) {
+  const methods = await pb.collection('users').listAuthMethods();
+  const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+  if (!provider) throw new Error('Shopify non configuré.');
 
+  sessionStorage.setItem('shopify.oauth', JSON.stringify({
+    state: provider.state,
+    verifier: provider.codeVerifier,
+    expires: Date.now() + 5 * 60 * 1000,
+  }));
+
+  const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
+  if (silent) url.searchParams.set('prompt', 'none');
+  location.assign(url.href);
+}
+
+async function completeShopifyLogin() {
+  const params = new URLSearchParams(location.search);
+  history.replaceState(null, '', location.pathname);
+
+  const saved = sessionStorage.getItem('shopify.oauth');
+  sessionStorage.removeItem('shopify.oauth');
+  const flow = JSON.parse(saved || 'null');
+
+  if (!flow || !Number.isFinite(flow.expires) ||
+      flow.expires <= Date.now() || flow.state !== params.get('state')) {
+    throw new Error('Retour Shopify invalide ou expiré.');
+  }
+
+  if (params.has('error')) return { error: params.get('error') };
+  const code = params.get('code');
+  if (!code) throw new Error('Code Shopify manquant.');
+
+  // Empêcher la liaison avec un autre compte déjà connecté.
   pb.authStore.clear();
   return pb.collection('users').authWithOAuth2Code(
-    'shopify', completion.code, completion.codeVerifier, completion.redirectURL,
+    'shopify', code, flow.verifier, redirectURL,
   );
 }
 ```
+<!-- native-redirect-example:end -->
 
-Cet appel atteint `/api/collections/users/auth-with-oauth2`. Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère le profil. La réponse d'authentification, les erreurs et les éventuels challenges MFA restent ceux de PocketBase. Le frontend doit traiter ces challenges s'il active la MFA.
+Utilisation :
 
-Le SDK enregistre automatiquement le jeton et le compte dans son auth store. Son `LocalAuthStore` utilise le stockage du navigateur lorsqu'il est disponible. Les lectures, le renouvellement et le realtime passent ensuite par les API natives ; aucun appel de réhydratation via un cookie serveur n'est nécessaire. La déconnexion locale utilise `pb.authStore.clear()` et, si nécessaire, la fermeture des abonnements realtime du frontend. Elle ne déconnecte pas Shopify et ne révoque pas à elle seule les copies déjà émises du jeton PocketBase. [SDK officiel](https://github.com/pocketbase/js-sdk#auth-store), [authentification PocketBase](https://pocketbase.io/docs/authentication/).
+- À l'arrivée sans compte PocketBase connecté : appeler `loginWithShopify(true)` une seule fois.
+- Au clic sur le bouton de connexion : appeler `loginWithShopify(false)`.
+- Sur le callback : appeler `completeShopifyLogin()`. En cas de `login_required`, `interaction_required` ou `consent_required`, afficher le bouton. En cas de `access_denied`, afficher l'annulation. Ne jamais relancer automatiquement une tentative silencieuse depuis le callback.
+- Gérer les erreurs des promesses dans l'interface. Ne pas afficher directement des paramètres OAuth arbitraires, ni journaliser le code, le verifier ou les tokens.
+- Après un succès, le SDK a déjà alimenté `pb.authStore`. Les appels CRUD, le refresh et le realtime utilisent l'authentification native.
 
-## Sécurité et limites conservées
+Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics ni ressources tierces. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
 
-Les contrôles de state, navigateur, PKCE, nonce, signature JWKS, algorithme, émetteur, audience et expiration restent actifs. Les sujets Shopify numériques sont normalisés seulement après vérification de signature, sans conversion en flottant ni perte de précision.
+Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. Il n'est pas servi par le backend.
 
-Un e-mail identique ou un compte présent dans `Authorization` ne suffisent pas à fusionner une identité Shopify avec un compte existant. Seule une liaison d'identité exacte est acceptée ; un conflit renvoie HTTP 409. Les tokens Shopify ne sont pas exposés dans les métadonnées OAuth ou stockés pour une réutilisation ultérieure. Les sessions PocketBase et Shopify restent indépendantes.
+## Sécurité et limites
 
-Les transactions de connexion sont encore stockées en mémoire dans une instance Go. Un redémarrage interrompt les parcours en cours. Une exploitation multi-instance exige une stratégie explicite pour partager ou router ces transactions ; ce nettoyage ne l'implémente pas.
+Le fournisseur ajoute automatiquement un nonce à l'URL native : le nonce est le challenge S256 PKCE, jamais le verifier secret. C'est une valeur imprévisible et différente pour chaque tentative. Au moment de l'échange, le serveur recalcule le challenge depuis le verifier reçu et compare le nonce de l'ID token signé. Aucune valeur attendue n'a besoin d'être conservée côté serveur.
 
-Le service expose uniquement le parcours `authWithOAuth2Code` avec redirection. La variante popup `authWithOAuth2` n'est pas prise en charge. Aucun contrôle périodique de la session Shopify, interface MFA, frontend ou synchronisation globale des déconnexions n'est ajouté.
+Le serveur conserve les contrôles de format PKCE, callback exact, client, origine, signature JWKS, algorithme, issuer, audience, expiration, nonce et `at_hash` si présent. Les sujets Shopify numériques sont normalisés après vérification de signature, sans perte de précision. Le POST natif et la réponse des méthodes d'auth sont marqués `no-store`.
 
-Les exigences Customer Account API restent inchangées : nouveaux comptes clients activés, callback enregistré, scope `customer_read_customers` et accès requis aux données client protégées. Notre app existante et la boutique de test ne sont pas supprimées. [Authentification Shopify](https://shopify.dev/docs/api/customer/latest#authentication).
+Un e-mail identique ou un compte présent dans `Authorization` ne suffisent pas à fusionner une identité Shopify avec un compte existant. Seule une liaison exacte est acceptée ; un conflit renvoie HTTP 409. Les tokens Shopify ne sont ni exposés dans les métadonnées OAuth ni conservés pour des appels ultérieurs.
+
+La mémoire tampon de réponse OAuth empêche la fuite d'un JWT lorsqu'un hook refuse après `e.Next()`. Elle ne fabrique aucun token et conserve les réponses natives, notamment les challenges MFA. Le frontend doit gérer une MFA si le projet l'active ; l'exemple ci-dessus ne fournit pas cet écran.
+
+Le parcours documenté et testé est la redirection manuelle avec `authWithOAuth2Code`. La popup `authWithOAuth2` n'est pas activée par cette étape, car elle utilise un autre callback. Aucun iframe silencieux, contrôle périodique de session Shopify ni synchronisation globale des déconnexions n'est ajouté.
+
+Les sessions PocketBase et Shopify restent indépendantes. `pb.authStore.clear()` déconnecte localement le studio ; il ne déconnecte pas Shopify et ne révoque pas les copies déjà émises du token. Une nouvelle tentative silencieuse peut reconnecter le client si Shopify est toujours connecté.
+
+L'intégration ne conserve plus de transaction OAuth locale qui impose de rester sur la même instance Go. Cela ne configure pas pour autant une infrastructure PocketBase multi-instance ou un stockage partagé.
+
+[Parcours OAuth PocketBase](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), [SDK et auth store](https://github.com/pocketbase/js-sdk#auth-store), [authentification Shopify](https://shopify.dev/docs/api/customer/2026-10#authentication).
 
 ## Tests et historique
 
-Voir [TESTS.md](TESTS.md) pour les contrôles du code actuel. Le fournisseur simulé est réservé aux tests Go ; il n'existe plus de commande lançant une fausse boutique ni de gateway publique de démonstration.
+Voir [TESTS.md](TESTS.md). Le fournisseur simulé est réservé aux tests ; aucune fausse boutique ni gateway n'est distribuée.
 
-L'enquête initiale et les essais précédents sont conservés dans [l'historique du prototype](docs/prototype-history.md) et [l'historique des validations](docs/prototype-tests.md). Leurs anciennes routes et URL ne décrivent pas l'interface actuelle.
+Les migrations historiques de `migrations` restent testées mais ne sont pas importées par `main.go` ou le cœur. Ne pas réutiliser leurs anciens nettoyages sur un autre projet. Ce changement ne migre ni les comptes ni les liaisons Shopify existantes.
+
+L'enquête et les validations antérieures restent dans [docs/prototype-history.md](docs/prototype-history.md) et [docs/prototype-tests.md](docs/prototype-tests.md). Leurs anciens parcours et URL ne décrivent pas l'interface actuelle.

@@ -1,4 +1,4 @@
-# Validation après retrait des couches de démonstration
+# Validation du parcours OAuth natif par redirection
 
 Environnement : Windows amd64, Go 1.27.2, PocketBase 0.40.5, SDK JavaScript officiel 0.28.1.
 
@@ -10,41 +10,73 @@ go vet ./...
 go build ./...
 node --check integration/oauth.mjs
 node --check integration/sdk.mjs
+git diff --check
 ```
 
-Résultat du 15 octobre 2026 : succès des 47 groupes de tests du cœur, couverture de 86,3 %. Les cinq groupes des migrations historiques passent aussi, avec une couverture de 81,0 %. `go vet`, la compilation du backend et les vérifications de syntaxe JavaScript passent.
+Résultat du 15 octobre 2026 : succès des 49 groupes de tests du cœur, dont les deux intégrations SDK. Couverture du cœur : 86,8 %. Les cinq groupes des migrations historiques passent aussi, avec une couverture de 81,0 %. `go vet`, la compilation et les vérifications JavaScript passent.
 
-Les tests utilisent une instance HTTP PocketBase et une base SQLite temporaire par scénario. Le fournisseur Shopify simulé vérifie les codes à usage unique, PKCE et l'authentification éventuelle du client confidential. Il n'est ni importé par le code d'authentification, ni lancé comme boutique de démonstration.
+## Nouveau contrat testé
 
-## Contrôles actuels
+Le frontend appelle les API natives uniquement :
 
-- Parcours JSON `start` puis `complete`, suivi du véritable endpoint OAuth natif.
-- Session Shopify existante, visiteur anonyme avec `prompt=none`, puis parcours interactif sans HTML fourni par le service.
-- Contrôles d'origine avant la création ou consommation du parcours ; state, cookie du navigateur, expiration et rejeu.
-- Signature, algorithme, audience, émetteur, nonce, expiration et `nbf` ; sujets numériques conservés sans arrondi.
-- Aucun cookie de session ni token dans la réponse de préparation. Seul le cookie temporaire de parcours est créé puis expiré.
-- Anciennes pages, scripts, `/studio/session` et `/studio/logout` absents du routeur.
-- Un ancien cookie contenant un vrai jeton PocketBase n'authentifie pas les API ; l'en-tête natif reste nécessaire.
+1. `GET /api/collections/users/auth-methods` via `listAuthMethods()`.
+2. Redirection de premier niveau vers Shopify, avec le state et PKCE natifs.
+3. Vérification du state et de l'expiration dans le sessionStorage de l'onglet.
+4. `POST /api/collections/users/auth-with-oauth2` via `authWithOAuth2Code()`.
+
+Il n'existe aucun endpoint personnalisé de préparation ou de callback, aucun cookie OAuth, ni aucune transaction en mémoire côté Go. Le test vérifie que `/api/shopify/auth/start` et `/api/shopify/auth/complete` répondent HTTP 404.
+
+Le state n'est plus validé côté serveur. Les helpers de la fixture Go émulent ce contrôle côté frontend et ne constituent pas des routes HTTP. La validation effective du JavaScript public est aussi testée avec le SDK officiel, comme décrit ci-dessous.
+
+## Contrôles de sécurité
+
+- Session Shopify existante, visiteur anonyme avec `prompt=none`, puis connexion interactive.
+- State natif et challenge PKCE neufs à chaque appel, verifier absent de l'URL d'autorisation.
+- Format du verifier obligatoire, S256, mauvais verifier, code expiré et code à usage unique.
+- Nonce égal au challenge PKCE et vérifié côté serveur depuis le verifier ; substitution du nonce avec un PKCE pourtant valide refusée.
+- Nonce absent, signature, algorithme, audience, issuer, expiration, `nbf` et mauvais `at_hash` refusés.
+- Sujets Shopify numériques conservés exactement, sans arrondi et sans contournement de signature.
+- Callback et client fixes ; POST natif refusé sans l'origine attendue ; réponses OAuth et méthodes d'auth non mises en cache.
+- Aucun cookie PocketBase requis ou créé, ni accès/refresh token Shopify exposé.
+- Anciennes pages, SDK embarqué, session bridge, logout et routes personnalisées absents.
+- Un ancien cookie contenant un token PocketBase n'authentifie pas l'API ; l'en-tête natif reste nécessaire.
 - Hooks OAuth, création, auth et enrichissement ; refus avant ou après `e.Next()` sans fuite de JWT.
-- Règles natives, relations de propriétaire, MFA, renouvellement et filtrage realtime, comparés aux comptes avec mot de passe.
-- Comptes et liaisons OAuth existants conservés ; aucun rapprochement automatique par e-mail ou en-tête Authorization.
-- Schéma et règles de `users` laissés au projet hôte, y compris les champs portant d'anciens noms du prototype.
-- Collection `_shopifyIdentities` système, API verrouillée, identifiants bruts non exposés, suppression par cascade depuis `users`.
+- Règles natives, relations de propriétaire, MFA, renouvellement et filtrage realtime comparés aux comptes avec mot de passe.
+- Comptes et liaisons OAuth conservés ; aucune fusion par e-mail ou par en-tête Authorization.
+- Schéma et règles de `users` laissés au projet hôte, même pour d'anciens noms de champs du prototype.
+- `_shopifyIdentities` système, règles API verrouillées, identifiants bruts non exposés, suppression par cascade depuis `users`.
 
-## SDK officiel sans pont de session
+Le fournisseur simulé utilise de vrais codes, PKCE, JWT signés, JWKS et GraphQL dans une instance HTTP locale. Les données de chaque test sont dans une base SQLite temporaire. Ce fournisseur n'est pas importé par le programme de production.
 
-`integration/oauth.mjs` exécute `authWithOAuth2Code`, vérifie `authStore.isValid`, le compte et la notification `onChange`, puis crée une nouvelle instance du SDK. Cette instance retrouve l'état dans le `LocalAuthStore` par défaut, effectue un `authRefresh` natif et lit son propre profil. Enfin, `authStore.clear()` rend une nouvelle instance non authentifiée.
+## Exemple frontend exécuté avec le SDK officiel
 
-Le test fournit à Node une simulation du contrat Web Storage de navigateur ; il n'utilise pas de custom auth store. Il ne remplace pas un test dans un navigateur réel. Les requêtes sont surveillées pour refuser toute route autre que les API natives de collections et tout cookie de session ajouté. Aucune requête à `/studio/session` n'est possible dans ce test.
+`integration/oauth.mjs` extrait et exécute directement les deux fonctions du [README](README.md). Il n'utilise pas une seconde implémentation du parcours.
 
-`integration/sdk.mjs` vérifie aussi les règles CRUD et le renouvellement avec un compte Shopify et un compte natif. Ces deux tests sont ignorés sans `RUN_JS_SDK_TEST=1`.
+Ce test réalise toute la séquence, avec le SDK officiel et de vraies requêtes aux serveurs locaux :
 
-## Historique et données existantes
+- Méthodes d'auth natives, tentative silencieuse anonyme, réception de `login_required` sans échange ni boucle.
+- Connexion interactive au fournisseur simulé et récupération du callback.
+- State incorrect, paramètres expirés, stockage absent ou corrompu et code manquant : aucun appel d'échange n'est envoyé.
+- URL du callback nettoyée avant l'échange, suppression des paramètres temporaires, mise à jour automatique de `pb.authStore` et notification `onChange`.
+- Rejeu du callback bloqué localement, puis tentative d'échange direct du même code refusée par le fournisseur.
+- Persistance via le LocalAuthStore par défaut, nouvelle instance SDK, `authRefresh`, lecture du compte et déconnexion locale.
 
-Les migrations historiques restent testées séparément, sans être importées par `main.go` ou par le cœur d'authentification. Le nettoyage du code ne supprime ni la base `pb_data`, ni les comptes, ni les sauvegardes, ni l'app Shopify existante. L'ancienne interface de démonstration et sa gateway ne font plus partie du projet exécutable.
+Le test intercepte les requêtes du SDK pour refuser toute API autre que les endpoints natifs de collections et tout cookie PocketBase. Les cookies de connexion de la boutique simulée sont séparés et ne sont envoyés qu'à cette boutique.
 
-Les validations antérieures contre la vraie boutique sont conservées dans [docs/prototype-tests.md](docs/prototype-tests.md). Le nouveau contrat JSON n'a pas encore été testé contre Shopify depuis un frontend hôte, puisque cette interface ne fait plus partie du projet. Les tests automatisés valident le contrat local et le SDK, pas les serveurs Shopify.
+Node reçoit une simulation du contrat Web Storage et de la navigation. Ce n'est pas un test dans un navigateur réel ni contre Shopify. Seuls les en-têtes que le navigateur fournit automatiquement, dont Origin, sont explicitement ajoutés par le harnais Node.
 
-Le backend nettoyé a été démarré en local sur `127.0.0.1:8090`. Les contrôles HTTP confirment la santé de l'API, les méthodes d'auth natives et le démarrage JSON avec `prompt=none`, PKCE S256, le callback enregistré et uniquement un cookie temporaire. Les anciennes routes retournent HTTP 404 ; une origine étrangère est refusée avec HTTP 403.
+`integration/sdk.mjs` vérifie aussi les règles CRUD et le renouvellement avec un compte Shopify et un compte natif. Les deux tests SDK nécessitent `RUN_JS_SDK_TEST=1`.
 
-Les processus de l'ancienne interface, de sa gateway et de son tunnel public ont été arrêtés. La sauvegarde SQLite `pb_backups/before-demo-stop-20261015.db` précède cet arrêt. Une comparaison après redémarrage du backend confirme que `users`, `_shopifyIdentities` et `_externalAuths` sont inchangés. Le contrôle SQLite `quick_check` retourne `ok`. L'app Shopify et ses fichiers locaux n'ont pas été modifiés.
+## Backend local et données existantes
+
+Le nouveau binaire `bin/pocketbase-native-redirect.exe` a remplacé le backend local sur `127.0.0.1:8090`. Les contrôles HTTP confirment :
+
+- Santé de l'API et disponibilité de `users/auth-methods`.
+- Nonce et challenge S256 cohérents, paramètres natifs présents, réponse `no-store`, aucun cookie créé.
+- Anciens endpoints personnalisés en HTTP 404 et origine étrangère refusée en HTTP 403.
+
+La sauvegarde SQLite `pb_backups/before-native-redirect-20261015.db` précède le redémarrage. Une comparaison intégrale après redémarrage confirme que les lignes de `users`, `_shopifyIdentities` et `_externalAuths` sont inchangées. `PRAGMA quick_check` retourne `ok`.
+
+L'app Shopify, sa configuration et le callback enregistré n'ont pas été modifiés. Le tunnel de l'ancienne démonstration reste arrêté ; aucun frontend de démo n'a été réintroduit. Le nouveau parcours n'a pas encore été retesté contre la vraie boutique depuis un frontend hôte.
+
+Les migrations historiques restent testées séparément et ne sont pas importées par `main.go` ou le cœur. Les validations antérieures contre Shopify restent dans [docs/prototype-tests.md](docs/prototype-tests.md).

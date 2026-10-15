@@ -32,6 +32,15 @@ type fixture struct {
 	client    *http.Client
 	mock      *mockshop.Mock
 	auth      authResult
+	flows     map[string]browserFlow // Simulated sessionStorage, not server state.
+}
+
+type browserFlow struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	CodeVerifier string `json:"codeVerifier"`
+	AuthURL      string `json:"authURL"`
+	Expires      time.Time
 }
 
 func setup(t *testing.T, secret, fault string) *fixture {
@@ -140,17 +149,39 @@ func (f *fixture) loginShop() {
 
 func (f *fixture) start(silent bool) response {
 	f.t.Helper()
-	body := string(mustJSON(f.t, map[string]bool{"silent": silent}))
-	start := f.request("POST", f.api.URL+"/api/shopify/auth/start", f.api.URL, body, "")
+	start := f.request("GET", f.api.URL+"/api/collections/users/auth-methods", "", "", "")
 	f.expect(start, 200)
 	var result struct {
-		URL string `json:"url"`
+		OAuth2 struct {
+			Providers []browserFlow `json:"providers"`
+		} `json:"oauth2"`
 	}
-	if json.Unmarshal([]byte(start.body), &result) != nil || result.URL == "" {
-		f.t.Fatal("missing Shopify authorization URL")
+	if err := json.Unmarshal([]byte(start.body), &result); err != nil {
+		f.t.Fatal(err)
 	}
-	start.location = result.URL
-	return start
+	for _, p := range result.OAuth2.Providers {
+		if p.Name != providerName {
+			continue
+		}
+		if p.AuthURL == "" || p.State == "" || p.CodeVerifier == "" || len(start.cookies) != 0 || start.headers.Get("Cache-Control") != "no-store" {
+			f.t.Fatal("missing private native OAuth parameters or unexpected cookie")
+		}
+		p.Expires = time.Now().Add(5 * time.Minute)
+		if f.flows == nil {
+			f.flows = map[string]browserFlow{}
+		}
+		f.flows[p.State] = p
+		u, _ := url.Parse(p.AuthURL + url.QueryEscape(f.s.cfg.RedirectURL))
+		if silent {
+			q := u.Query()
+			q.Set("prompt", "none")
+			u.RawQuery = q.Encode()
+		}
+		start.location = u.String()
+		return start
+	}
+	f.t.Fatal("missing native Shopify provider")
+	return response{}
 }
 
 func (f *fixture) authorize(silent bool) string {
@@ -171,17 +202,30 @@ func (f *fixture) login() response {
 }
 
 func (f *fixture) callback(callback string) response {
+	// Emulate the FRONTEND callback checks. This does not call a custom API.
+	// The same checks are exercised in JavaScript with the official SDK too.
 	f.t.Helper()
 	u, err := url.Parse(callback)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	q := u.Query()
-	body := string(mustJSON(f.t, map[string]string{"state": q.Get("state"), "code": q.Get("code"), "error": q.Get("error")}))
-	return f.request("POST", f.api.URL+"/api/shopify/auth/complete", f.api.URL, body, "")
+	p, ok := f.flows[q.Get("state")]
+	if !ok || time.Now().After(p.Expires) {
+		return response{status: 400}
+	}
+	delete(f.flows, q.Get("state"))
+	data := map[string]string{"error": q.Get("error")}
+	if q.Get("error") == "" {
+		if q.Get("code") == "" {
+			return response{status: 400}
+		}
+		data = map[string]string{"provider": providerName, "collection": collectionName, "code": q.Get("code"), "codeVerifier": p.CodeVerifier, "redirectURL": f.s.cfg.RedirectURL}
+	}
+	return response{status: 200, body: string(mustJSON(f.t, data))}
 }
 
-// Exercise the same JSON preparation and native OAuth endpoint as a host frontend.
+// Exercise browser-side callback validation followed by the native endpoint.
 func (f *fixture) completeCallback(callback string) response {
 	f.t.Helper()
 	page := f.callback(callback)
@@ -196,10 +240,8 @@ func (f *fixture) completeCallback(callback string) response {
 	if r.status == 200 {
 		f.auth = decodeAuth(f.t, r)
 	}
-	for _, cookie := range r.cookies {
-		if cookie.Name != f.s.flowCookieName() || cookie.MaxAge >= 0 {
-			f.t.Fatal("OAuth response created a session cookie")
-		}
+	if len(r.cookies) != 0 {
+		f.t.Fatal("native OAuth created an unexpected cookie")
 	}
 	return r
 }
@@ -273,7 +315,7 @@ func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 	f.authRecord()
 }
 
-func TestCallbackRequiresStateAndBrowserBinding(t *testing.T) {
+func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
 	f := setup(t, "", "")
 	f.expect(f.callback(f.api.URL+"/oauth/callback?state=forged&code=fake"), 400)
 	f.loginShop()
@@ -283,19 +325,18 @@ func TestCallbackRequiresStateAndBrowserBinding(t *testing.T) {
 	q.Set("state", "wrong")
 	u.RawQuery = q.Encode()
 	f.expect(f.callback(u.String()), 400)
-	// A second browser cannot redeem another browser's callback.
-	jar, _ := cookiejar.New(nil)
-	original := f.client.Jar
-	f.client.Jar = jar
+	// A second tab without the matching sessionStorage rejects the callback.
+	original := f.flows
+	f.flows = nil
 	f.expect(f.callback(cb), 400)
-	f.client.Jar = original
+	f.flows = original
 	f.expect(f.completeCallback(cb), 200)
 	// Replaying a previously consumed callback must fail.
 	f.expect(f.callback(cb), 400)
 }
 
 func TestInvalidIdentityTokensRejected(t *testing.T) {
-	for _, fault := range []string{"nonce", "audience", "issuer", "expired", "signature"} {
+	for _, fault := range []string{"nonce", "nonce_missing", "at_hash", "audience", "issuer", "expired", "signature"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", fault)
 			f.loginShop()
@@ -322,7 +363,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 }
 
 func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
-	for _, fault := range []string{"signature", "algorithm", "issuer", "audience", "expired", "nonce", "not_before"} {
+	for _, fault := range []string{"signature", "algorithm", "issuer", "audience", "expired", "nonce", "nonce_missing", "at_hash", "not_before"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", "numeric:"+fault)
 			f.loginShop()
@@ -537,17 +578,14 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 
 func TestOriginsAreCheckedBeforeCompletingTheFlow(t *testing.T) {
 	f := setup(t, "", "")
-	for _, origin := range []string{"", "https://evil.example"} {
-		f.expect(f.request("POST", f.api.URL+"/api/shopify/auth/start", origin, `{}`, ""), 403)
-	}
 	f.loginShop()
 	cb := f.authorize(false)
-	u, _ := url.Parse(cb)
-	body := string(mustJSON(t, map[string]string{"state": u.Query().Get("state"), "code": u.Query().Get("code")}))
+	page := f.callback(cb)
+	body := nativeOAuthBody(t, callbackData(t, page.body))
 	for _, origin := range []string{"", "https://evil.example"} {
-		f.expect(f.request("POST", f.api.URL+"/api/shopify/auth/complete", origin, body, ""), 403)
+		f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", origin, body, ""), 403)
 	}
-	f.expect(f.completeCallback(cb), 200)
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, body, ""), 200)
 }
 
 func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
@@ -555,7 +593,7 @@ func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
 	for _, path := range []string{"/studio", "/studio/auth", "/studio/callback", "/studio/client.js", "/studio/callback.js", "/studio/pocketbase.es.mjs"} {
 		f.expect(f.request("GET", f.api.URL+path, "", "", ""), 404)
 	}
-	for _, path := range []string{"/studio/session", "/studio/logout"} {
+	for _, path := range []string{"/studio/session", "/studio/logout", "/api/shopify/auth/start", "/api/shopify/auth/complete"} {
 		f.expect(f.request("POST", f.api.URL+path, f.api.URL, "", ""), 404)
 	}
 	f.login()
@@ -565,20 +603,18 @@ func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
 	f.expect(f.request("GET", f.api.URL+"/native/whoami", "", "", f.auth.Token), 200)
 }
 
-func TestExpiredLoginTransaction(t *testing.T) {
+func TestFrontendExpiresLoginParameters(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginShop()
 	cb := f.authorize(true)
-	f.s.mu.Lock()
-	for k, p := range f.s.pending {
+	for k, p := range f.flows {
 		p.Expires = time.Now().Add(-time.Minute)
-		f.s.pending[k] = p
+		f.flows[k] = p
 	}
-	f.s.mu.Unlock()
 	f.expect(f.callback(cb), 400)
 }
 
-func TestProductionURLAndCookieRequirements(t *testing.T) {
+func TestProductionURLRequirements(t *testing.T) {
 	for _, raw := range []string{"http://shop.example", "https://u:p@shop.example", "https://shop.example/path", "https://shop.example?shop=evil", ""} {
 		if checkURL(raw, false, true) == nil {
 			t.Errorf("accepted %q", raw)
@@ -589,15 +625,6 @@ func TestProductionURLAndCookieRequirements(t *testing.T) {
 	}
 	if checkURL("http://127.0.0.1:8090", true, true) != nil {
 		t.Fatal("local mock should be allowed")
-	}
-	s := &Service{origin: "https://app.example"}
-	rr := httptest.NewRecorder()
-	e := &core.RequestEvent{}
-	e.Response = rr
-	s.setFlowCookie(e, "test", 300)
-	c := rr.Result().Cookies()[0]
-	if c.Name != "__Host-shopify_oauth" || !c.Secure || !c.HttpOnly || c.Domain != "" || c.Path != "/" || c.MaxAge != 300 {
-		t.Fatal("missing production cookie protections")
 	}
 }
 
@@ -628,7 +655,7 @@ func TestNativePocketBaseOIDCProvider(t *testing.T) {
 	p.SetScopes(f.s.oauth.Scopes)
 	p.SetExtra(map[string]any{"issuers": []string{f.s.issuer}, "jwksURL": f.shop.URL + "/jwks"})
 	verifier := oauth2.GenerateVerifier()
-	a := f.request("GET", p.BuildAuthURL(random(), oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", random())), "", "", "")
+	a := f.request("GET", p.BuildAuthURL(oauth2.GenerateVerifier(), oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", oauth2.GenerateVerifier())), "", "", "")
 	f.expect(a, 302)
 	u, _ := url.Parse(a.location)
 	tok, err := p.FetchToken(u.Query().Get("code"), oauth2.VerifierOption(verifier))

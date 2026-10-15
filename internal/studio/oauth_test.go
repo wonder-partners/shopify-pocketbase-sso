@@ -2,12 +2,10 @@ package studio
 
 import (
 	"encoding/json"
-	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -148,60 +146,94 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 	}
 }
 
-func TestNativeOAuthCodeIsBrowserBoundSingleUseAndOriginProtected(t *testing.T) {
+func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginShop()
 	cb := f.authorize(false)
-	u, _ := url.Parse(cb)
-	f.s.mu.Lock()
-	pending := f.s.pending[u.Query().Get("state")]
-	f.s.mu.Unlock()
-	data := map[string]string{"provider": providerName, "code": u.Query().Get("code"), "codeVerifier": pending.Verifier, "redirectURL": f.s.oauth.RedirectURL}
-	body := nativeOAuthBody(t, data)
 	endpoint := f.api.URL + "/api/collections/users/auth-with-oauth2"
-	// Even a real code and verifier cannot bypass the state-checked callback.
-	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
 	page := f.callback(cb)
 	f.expect(page, 200)
-	if page.headers.Get("Cache-Control") != "no-store" || !strings.HasPrefix(page.headers.Get("Content-Type"), "application/json") || strings.Contains(page.body, `"token"`) {
-		t.Fatal("completion must return private JSON parameters, never HTML or an auth token")
-	}
+	data := callbackData(t, page.body)
+	body := nativeOAuthBody(t, data)
 	f.expect(f.request("POST", endpoint, "https://evil.example", body, ""), 403)
-	jar := f.client.Jar
+	// Knowing the correct verifier is sufficient; there is no OAuth cookie.
 	f.client.Jar, _ = cookiejar.New(nil)
-	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
-	u2, _ := url.Parse(f.api.URL)
-	f.client.Jar.SetCookies(u2, []*http.Cookie{{Name: f.s.flowCookieName(), Value: "another-browser", Path: "/"}})
-	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
-	f.client.Jar = jar
 	data["redirectURL"] = "https://evil.example/callback"
 	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 400)
 	data["redirectURL"] = f.s.oauth.RedirectURL
-	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 200)
-	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
+	r := f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), "")
+	f.expect(r, 200)
+	if len(r.cookies) != 0 || r.headers.Get("Cache-Control") != "no-store" {
+		t.Fatal("native OAuth must not set cookies or allow caching")
+	}
+	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 502)
 }
 
-func TestNativeOAuthRejectsExpiredCompletionAndWrongVerifier(t *testing.T) {
-	for _, fault := range []string{"expired", "pkce"} {
+func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
+	for _, fault := range []string{"code_expired", "missing", "short", "long", "characters", "wrong"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", "")
 			f.loginShop()
 			page := f.callback(f.authorize(false))
 			f.expect(page, 200)
 			data := callbackData(t, page.body)
-			status := 502
-			if fault == "expired" {
-				f.s.mu.Lock()
-				p := f.s.ready[data["code"]]
-				p.Expires = time.Now().Add(-time.Minute)
-				f.s.ready[data["code"]] = p
-				f.s.mu.Unlock()
-				status = 400
-			} else {
-				data["codeVerifier"] = "wrong-verifier"
+			status := 400
+			switch fault {
+			case "code_expired":
+				f.mock.Fault = fault
+				status = 502
+			case "missing":
+				data["codeVerifier"] = ""
+			case "short":
+				data["codeVerifier"] = "short"
+			case "long":
+				data["codeVerifier"] = strings.Repeat("a", 129)
+			case "characters":
+				data["codeVerifier"] = strings.Repeat("!", 43)
+			case "wrong":
+				data["codeVerifier"] = strings.Repeat("a", 43)
+				status = 502
 			}
 			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), status)
 		})
+	}
+}
+
+func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
+	f := setup(t, "", "")
+	first, second := f.start(false), f.start(false)
+	a, _ := url.Parse(first.location)
+	b, _ := url.Parse(second.location)
+	q := a.Query()
+	if q.Get("nonce") == "" || q.Get("nonce") != q.Get("code_challenge") || q.Get("code_challenge_method") != "S256" || q.Get("state") == b.Query().Get("state") || q.Get("nonce") == b.Query().Get("nonce") {
+		t.Fatal("native methods did not generate fresh PKCE-bound nonces and states")
+	}
+	if strings.Contains(first.location, f.flows[q.Get("state")].CodeVerifier) {
+		t.Fatal("secret verifier leaked into authorization URL")
+	}
+	p := &shopifyProvider{}
+	p.SetAuthURL(f.s.oauth.Endpoint.AuthURL)
+	if p.BuildAuthURL("state") != "" {
+		t.Fatal("provider allowed authorization without S256 PKCE")
+	}
+}
+
+func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
+	f := setup(t, "", "")
+	f.loginShop()
+	start := f.start(false)
+	u, _ := url.Parse(start.location)
+	q := u.Query()
+	q.Set("nonce", "a-different-authorization-request")
+	u.RawQuery = q.Encode()
+	// Shopify accepts the code and the matching verifier, but our provider
+	// rejects the signed ID token because its nonce is from a different flow.
+	a := f.request("GET", u.String(), "", "", "")
+	f.expect(a, 302)
+	f.expect(f.completeCallback(a.location), 401)
+	count, _ := f.app.CountRecords("users")
+	if count != 0 {
+		t.Fatal("nonce substitution created an account")
 	}
 }
 

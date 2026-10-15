@@ -161,7 +161,7 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 	delete(m.codes, r.Form.Get("code"))
 	m.mu.Unlock()
 	hash := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
-	if !ok || base64.RawURLEncoding.EncodeToString(hash[:]) != a.Challenge {
+	if !ok || m.Fault == "code_expired" || base64.RawURLEncoding.EncodeToString(hash[:]) != a.Challenge {
 		http.Error(w, "invalid code or PKCE", 400)
 		return
 	}
@@ -181,6 +181,10 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 	switch fault {
 	case "nonce":
 		c["nonce"] = "wrong"
+	case "nonce_missing":
+		delete(c, "nonce")
+	case "at_hash":
+		c["at_hash"] = "invalid-access-token-hash"
 	case "audience":
 		c["aud"] = "wrong-client"
 	case "issuer":

@@ -3,11 +3,9 @@ package studio
 import (
 	"bytes"
 	"encoding/json"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -41,17 +39,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 		t.Skip("set RUN_JS_SDK_TEST=1 to execute the official JS SDK")
 	}
 	f := setup(t, "", "numeric:")
-	f.loginShop()
-	page := f.callback(f.authorize(false))
-	f.expect(page, 200)
-	input := callbackData(t, page.body)
-	input["url"] = f.api.URL
-	u, _ := url.Parse(f.api.URL)
-	var cookies []string
-	for _, c := range f.client.Jar.Cookies(u) {
-		cookies = append(cookies, c.Name+"="+c.Value)
-	}
-	input["cookie"] = strings.Join(cookies, "; ")
+	input := map[string]string{"url": f.api.URL, "shopURL": f.shop.URL, "redirectURL": f.s.cfg.RedirectURL}
 	data, _ := json.Marshal(input)
 	script, _ := filepath.Abs("../../integration/oauth.mjs")
 	cmd := exec.Command("node", script)
