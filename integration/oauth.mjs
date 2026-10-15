@@ -12,7 +12,10 @@ const result = await pb.collection(input.collection).authWithOAuth2Code(
 assert.equal(pb.authStore.isValid, true);
 assert.equal(pb.authStore.record.id, result.record.id);
 assert.equal(result.record.email, 'camille@example.test');
-assert.equal(result.record.shopify_sub, '900719925474099312345');
+for (const field of ['shopify_sub', 'shopify_issuer', 'shopify_customer_id']) {
+  assert.equal(Object.hasOwn(result.record, field), false);
+}
+assert.equal(Object.hasOwn(result.meta.rawUser, 'customerId'), false);
 assert.equal(result.meta.isNew, true);
 assert.equal(result.meta.accessToken, '');
 assert.equal(result.meta.refreshToken, '');

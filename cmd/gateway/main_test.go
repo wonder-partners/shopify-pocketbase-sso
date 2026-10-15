@@ -11,7 +11,7 @@ func TestGatewayPublishesOnlySelectedCollectionAPIs(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer upstream.Close()
 	target, _ := url.Parse(upstream.URL)
-	handler := gatewayHandler(target, []string{"users", "documents", "_superusers"})
+	handler := gatewayHandler(target, []string{"users", "documents", "_superusers", "_shopifyAccounts"})
 	for _, tc := range []struct {
 		path string
 		want int
@@ -22,6 +22,7 @@ func TestGatewayPublishesOnlySelectedCollectionAPIs(t *testing.T) {
 		{"/_/", 404}, {"/api/settings", 404}, {"/api/collections", 404},
 		{"/api/collections/users", 404}, {"/api/collections/unknown/records", 404},
 		{"/api/collections/_superusers/auth-with-password", 404},
+		{"/api/collections/_shopifyAccounts/records", 404},
 		{"/studio/../_/", 404}, {"/api/collections/users/../../settings", 404},
 	} {
 		rr := httptest.NewRecorder()

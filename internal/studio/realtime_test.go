@@ -57,12 +57,17 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("realtime connect timed out")
 			}
-			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*"]}`
+			account := privateAccount(f, shop.Id)
+			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyAccounts/*","_shopifyAccounts/` + account.Id + `"]}`
 			f.expect(f.request("POST", f.studio.URL+"/api/realtime", "", body, token), 204)
+			account.Set("customerId", "gid://shopify/Customer/67890")
+			if err := f.app.Save(account); err != nil {
+				t.Fatal(err)
+			}
 			f.expect(f.request("PATCH", f.studio.URL+"/api/collections/documents/records/"+otherDoc, "", `{"title":"Other user update"}`, otherToken), 200)
 			select {
 			case <-events:
-				t.Fatal("realtime leaked another user's record")
+				t.Fatal("realtime leaked a private Shopify identity or another user's record")
 			case <-time.After(100 * time.Millisecond):
 			}
 			f.expect(f.request("PATCH", f.studio.URL+"/api/collections/documents/records/"+ownDoc, "", `{"title":"Own update"}`, token), 200)

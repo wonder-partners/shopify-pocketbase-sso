@@ -16,31 +16,43 @@ import (
 
 const collectionName = "users"
 
-// Add only the identity fields/index. Preserve existing rules and auth policies.
+// Keep only shared profile fields in the auth collection. Move old Shopify
+// fields transactionally before dropping them; preserve all user ids and rules.
 func ensureCollection(app core.App, name string) error {
-	c, err := app.FindCollectionByNameOrId(name)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		c = core.NewAuthCollection(name)
-		c.ViewRule = types.Pointer("id = @request.auth.id")
-	}
-	if !c.IsAuth() || c.Name == "_superusers" {
-		return errors.New("Shopify requires a non-superuser auth collection")
-	}
-	for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id", "first_name", "last_name"} {
-		existing := c.Fields.GetByName(field)
-		if existing == nil {
-			c.Fields.Add(&core.TextField{Name: field, Max: 1000})
-		} else if existing.Type() != core.FieldTypeText {
-			return fmt.Errorf("Shopify field %s must be a text field", field)
+	var target string
+	err := app.RunInTransaction(func(tx core.App) error {
+		c, err := tx.FindCollectionByNameOrId(name)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
-	}
-	// Unlinked, built-in accounts all have empty Shopify fields. Do not make
-	// those empty pairs unique, otherwise the second password account fails.
-	c.AddIndex("idx_"+c.Id+"_shopify_identity", true, "shopify_issuer, shopify_sub", "shopify_issuer != '' AND shopify_sub != ''")
-	if err := app.Save(c); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c = core.NewAuthCollection(name)
+			c.ViewRule = types.Pointer("id = @request.auth.id")
+		}
+		if !c.IsAuth() || c.Name == "_superusers" {
+			return errors.New("Shopify requires a non-superuser auth collection")
+		}
+		for _, field := range []string{"first_name", "last_name"} {
+			existing := c.Fields.GetByName(field)
+			if existing == nil {
+				c.Fields.Add(&core.TextField{Name: field, Max: 1000})
+			} else if existing.Type() != core.FieldTypeText {
+				return fmt.Errorf("Profile field %s must be a text field", field)
+			}
+		}
+		if err := tx.Save(c); err != nil {
+			return err
+		}
+		if err := ensureAccountsCollection(tx, c); err != nil {
+			return err
+		}
+		if err := migrateLegacyAccounts(tx, c); err != nil {
+			return err
+		}
+		target = c.Name
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	guard := func(e *core.RecordRequestEvent) error {
@@ -51,11 +63,7 @@ func ensureCollection(app core.App, name string) error {
 		if err := e.BindBody(&body); err != nil {
 			return err
 		}
-		// Native OAuth signup is an internal records API request. PocketBase
-		// copies the event store, not the HTTP context, to that request.
-		if _, trusted := e.Get(trustedProfileKey).(*shopifyProvider); trusted {
-			return e.Next()
-		}
+		// Reject legacy field submissions too; these keys no longer belong to users.
 		for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {
 			if _, exists := body[field]; exists {
 				return e.ForbiddenError("Shopify identity fields are managed by the server.", nil)
@@ -63,8 +71,8 @@ func ensureCollection(app core.App, name string) error {
 		}
 		return e.Next()
 	}
-	app.OnRecordCreateRequest(c.Name).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
-	app.OnRecordUpdateRequest(c.Name).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
+	app.OnRecordCreateRequest(target).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
+	app.OnRecordUpdateRequest(target).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
 	return nil
 }
 
@@ -102,6 +110,17 @@ func (s *Service) configureProvider() error {
 	s.app.OnRecordAuthWithOAuth2Request(c.Name).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
 		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,
 	})
+	s.app.OnRecordAuthRequest(c.Name).Bind(&hook.Handler[*core.RecordAuthRequestEvent]{
+		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
+			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
+			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
+				if err := putAccount(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID); err != nil {
+					return e.InternalServerError("Unable to save the private Shopify identity.", nil)
+				}
+			}
+			return e.Next()
+		},
+	})
 	return nil
 }
 
@@ -115,15 +134,40 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	// Native OAuth can find a record by verified email or current auth header.
 	// Neither is sufficient for our policy: require an existing Shopify identity.
-	r, err := s.app.FindFirstRecordByFilter(s.cfg.AuthCollection,
-		"shopify_issuer = {:issuer} && shopify_sub = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
+	a, err := s.app.FindFirstRecordByFilter(accountsCollectionName,
+		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	var r *core.Record
+	if a != nil {
+		r, err = s.app.FindRecordById(s.cfg.AuthCollection, a.GetString("user"))
+		if err != nil {
+			return err
+		}
+	}
+	// A previous native login may have committed its external link before an
+	// interruption prevented saving our private row. Recover only from that
+	// exact native identity link, never from an email/header fallback candidate.
+	link, err := s.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+		"collectionRef": e.Collection.Id, "provider": providerName,
+		"providerId": identityID(s.issuer, p.subject),
+	})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if link != nil {
+		if r != nil && r.Id != link.RecordRef() {
+			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
+		}
+		r, err = s.app.FindRecordById(s.cfg.AuthCollection, link.RecordRef())
+		if err != nil {
+			return err
+		}
 	}
 	if e.Record != nil && (r == nil || e.Record.Id != r.Id) {
 		return router.NewApiError(http.StatusConflict, "Shopify cannot automatically link an existing account.", nil)
 	}
-	// Lazily preserve the prototype user's id and all relations on first login.
 	if r != nil {
 		e.Record, e.IsNewRecord = r, false
 	}
@@ -136,7 +180,6 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	values := map[string]any{
 		"email": p.profile.EmailAddress.Email, "first_name": p.profile.FirstName, "last_name": p.profile.LastName,
-		"shopify_issuer": s.issuer, "shopify_sub": p.subject, "shopify_customer_id": p.profile.ID,
 	}
 	e.Set(trustedProfileKey, p)
 	if r == nil {
@@ -149,6 +192,9 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		delete(e.CreateData, "verified")
 		delete(e.CreateData, "password")
 		delete(e.CreateData, "passwordConfirm")
+		for _, field := range legacyIdentityFields {
+			delete(e.CreateData, field)
+		}
 	} else {
 		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
 		for field, value := range values {

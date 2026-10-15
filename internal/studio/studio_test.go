@@ -301,7 +301,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 			f := setup(t, "", tc.fault)
 			f.loginStudio()
 			_, record := f.session()
-			if record.GetString("shopify_sub") != tc.subject || record.Email() != mockshop.Email {
+			if privateAccount(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
 				t.Fatal("numeric subject or profile was not preserved exactly")
 			}
 		})
@@ -446,10 +446,26 @@ func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
 	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
+func TestNullableShopifyNamesAreSynchronizedOnNextOAuthLogin(t *testing.T) {
+	f := setup(t, "", "names_empty")
+	f.loginStudio()
+	_, before := f.session()
+	if before.GetString("first_name") != "" || before.GetString("last_name") != "" {
+		t.Fatal("missing Shopify names must not be invented")
+	}
+	f.mock.Fault = ""
+	f.loginStudio()
+	_, after := f.session()
+	if after.Id != before.Id || after.GetString("first_name") != "Camille" || after.GetString("last_name") != "Martin" {
+		t.Fatal("next OAuth login did not refresh the newly populated Shopify names")
+	}
+}
+
 func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginStudio()
 	_, r := f.session()
+	account := privateAccount(f, r.Id)
 	f.mock.ProfileEmail = "new@example.test"
 	f.loginStudio()
 	_, updated := f.session()
@@ -459,7 +475,7 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f.mock.Subject = "different-shopify-subject"
 	f.expect(f.completeCallback(f.authorize("/studio/auth")), 409)
 	unchanged, err := f.app.FindRecordById(collectionName, r.Id)
-	if err != nil || unchanged.GetString("shopify_sub") != r.GetString("shopify_sub") {
+	if err != nil || unchanged.Email() != updated.Email() || privateAccount(f, r.Id).GetString("subject") != account.GetString("subject") {
 		t.Fatal("existing account changed")
 	}
 }

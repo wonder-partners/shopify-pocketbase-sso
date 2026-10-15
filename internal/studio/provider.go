@@ -112,7 +112,7 @@ func (p *shopifyProvider) FetchAuthUser(token *oauth2.Token) (*auth.AuthUser, er
 	u := &auth.AuthUser{
 		Id:      identityID(p.service.issuer, p.subject),
 		Name:    strings.TrimSpace(p.profile.FirstName + " " + p.profile.LastName),
-		RawUser: map[string]any{"customerId": p.profile.ID},
+		RawUser: map[string]any{}, // Technical identifiers stay in the private collection.
 	}
 	// PocketBase treats AuthUser.Email as verified. Keep an unverified email
 	// exclusively in the trusted record payload, never in this verified field.

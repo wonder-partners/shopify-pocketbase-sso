@@ -50,7 +50,7 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"provider": providerName, "recordRef": user.Id,
 	})
-	if err != nil || link.ProviderId() != identityID(f.s.issuer, user.GetString("shopify_sub")) {
+	if err != nil || link.ProviderId() != identityID(f.s.issuer, privateAccount(f, user.Id).GetString("subject")) {
 		t.Fatal("missing native identity link")
 	}
 	if first.Meta["accessToken"] != "" || first.Meta["refreshToken"] != "" || strings.Contains(string(mustJSON(t, first.Meta)), "id_token") {
@@ -189,17 +189,21 @@ func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 func TestNativeOAuthPreservesPrototypeAccountAndRelations(t *testing.T) {
 	f := setup(t, "", "")
 	documentsCollection(f)
-	c, _ := f.app.FindCollectionByNameOrId("users")
+	c := addLegacyIdentitySchema(f)
 	legacy := core.NewRecord(c)
 	legacy.SetEmail("camille@example.test")
 	legacy.SetPassword("TestPassword12345")
 	legacy.Set("shopify_issuer", f.s.issuer)
 	legacy.Set("shopify_sub", "shopify-customer-sub-12345")
+	legacy.Set("shopify_customer_id", "gid://shopify/Customer/12345")
 	if err := f.app.Save(legacy); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := legacy.NewAuthToken()
 	doc := createDocument(f, token, legacy.Id)
+	if err := ensureCollection(f.app, "users"); err != nil {
+		t.Fatal(err)
+	}
 	result := decodeAuth(t, f.loginStudio())
 	if result.Record["id"] != legacy.Id || result.Meta["isNew"] != false {
 		t.Fatal("prototype identity was not preserved")
@@ -269,8 +273,13 @@ func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T
 	r := f.request("POST", f.studio.URL+"/api/collections/users/auth-with-oauth2", f.studio.URL, string(mustJSON(t, body)), "")
 	f.expect(r, 200)
 	result := decodeAuth(t, r)
-	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || result.Record["shopify_sub"] != "shopify-customer-sub-12345" {
+	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateAccount(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
 		t.Fatal("client-controlled createData overrode the verified provider profile")
+	}
+	for _, field := range legacyIdentityFields {
+		if _, exists := result.Record[field]; exists {
+			t.Fatal("legacy identity field leaked in the native OAuth response")
+		}
 	}
 	f.expect(f.request("POST", f.studio.URL+"/api/collections/users/auth-with-password", "", `{"identity":"camille@example.test","password":"ChosenPassword12345"}`, ""), 400)
 }

@@ -17,7 +17,7 @@ node --check integration/sdk.mjs
 node --check integration/oauth.mjs
 ```
 
-Résultat : succès, 38 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 86,2 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
+Résultat : succès, 44 groupes de tests dans `internal/studio`, avec une couverture d'instructions de 86,0 %. La gateway atteint 65,2 %. `go vet`, les vérifications de syntaxe JavaScript et les compilations passent aussi.
 
 Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test, y compris `authWithOAuth2Code`. Sans `RUN_JS_SDK_TEST=1`, ces tests sont ignorés ; les autres tests Go restent exécutés.
 
@@ -68,10 +68,29 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Profil falsifié dans `createData` | Identité et e-mail imposés par Shopify ; impossible de forcer `verified` ou un mot de passe choisi par le client |
 | Credentials Shopify dans les métadonnées OAuth | Access token, refresh token et ID token non exposés |
 | Autres fournisseurs et politiques d'auth | Conservés lors de la configuration Shopify |
+| Migration vers `_shopifyAccounts`, puis second démarrage | Identifiants bruts, utilisateur, relation métier et liaison OAuth native conservés ; aucun doublon |
+| Ancienne identité incomplète, schéma partiel, identité en conflit ou règle dépendant d'un ancien champ | Migration refusée, anciennes données et règles conservées, copie privée annulée |
+| API privée par nom et identifiant de collection, avec et sans jeton utilisateur | Liste, lecture, création, modification et suppression refusées |
+| Expansion inverse depuis `users`, réponses OAuth et page HTML | Aucun identifiant Shopify brut exposé |
+| Abonnement realtime à la collection privée et à un compte précis | Aucun événement privé reçu, événements métier autorisés toujours reçus |
+| Ligne privée absente mais liaison OAuth native exacte présente | Ligne privée reconstruite, même utilisateur |
+| Ligne privée et liaison native désignant deux utilisateurs différents | Connexion refusée |
+| Suppression d'un utilisateur | Identité Shopify privée supprimée par cascade |
+| Prénom et nom Shopify `null`, puis renseignés | Connexion acceptée sans noms inventés ; même utilisateur enrichi à la connexion OAuth suivante |
 
 Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE et, lorsque configuré, le secret du client confidential. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
 
 Le serveur simulé est sous notre contrôle. Ces tests vérifient le comportement du client et de PocketBase face au contrat simulé ; ils ne constituent pas un test des serveurs Shopify.
+
+## Stockage privé des identités Shopify
+
+Le 15 octobre 2026, `bin/studio-private.exe` a remplacé `bin/studio-oauth2.exe` sur le même port `8090`, sans changer le tunnel, la gateway ni le callback Shopify. La sauvegarde SQLite `pb_backups/before-private-accounts-20261015.db` a été créée avant la migration.
+
+Une comparaison locale avec cette sauvegarde confirme : un utilisateur avant et après avec le même identifiant, une ligne `_shopifyAccounts` contenant les trois valeurs brutes exactes, les trois anciens champs retirés de `users`, et la liaison `_externalAuths` inchangée. Les deux anciens comptes de démonstration `studio_customers` sont conservés. Les cinq règles API de la nouvelle collection sont verrouillées. Le contrôle SQLite `quick_check` retourne `ok`. Aucun identifiant client, e-mail ou jeton réel n'a été affiché lors de ces contrôles.
+
+Après déploiement, le studio, le script de callback et les méthodes d'auth de `users` répondent HTTP 200. La collection privée est bloquée par la gateway publique avec HTTP 404 et par PocketBase directement avec HTTP 403 sans authentification. L'admin et les paramètres restent bloqués sur le tunnel.
+
+La requête de profil existante a été validée contre le schéma Customer Account API `2026-10`, qui expose bien `firstName` et `lastName` comme champs nullable. Le test des noms renseignés est validé sur le serveur simulé. Il reste à confirmer sur la boutique réelle après remplissage de la fiche client et nouvelle connexion par `/studio/auth`.
 
 ## Première démonstration locale, avant l'alignement API
 
