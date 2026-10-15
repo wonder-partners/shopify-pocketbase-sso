@@ -1,307 +1,115 @@
-# Connecter le studio PocketBase avec les comptes clients Shopify
+# Authentification Shopify dans PocketBase
 
-Enquête de faisabilité et prototype, 15 octobre 2026.
+Le projet adapte les nouveaux comptes clients Shopify au fournisseur OAuth2 natif de PocketBase. La connexion se termine par `authWithOAuth2Code('shopify', ...)` du SDK officiel, qui reçoit un jeton PocketBase et alimente son auth store.
 
-La solution retenue utilise les nouveaux comptes clients Shopify, la Customer Account API et un flux OAuth 2.0 avec OpenID Connect. Le studio crée ensuite sa propre session PocketBase. Elle ne nécessite pas Shopify Plus ni un service tiers d'authentification. Le client peut être enregistré par notre propre app Shopify avec `customer_authentication`, ou par le canal officiel Headless lorsqu'il est disponible. La boutique peut conserver son thème et son domaine actuels.
+Le code est en cours de nettoyage. Le module Go `studio-sso` et le package `internal/studio` restent à leur place : aucun packaging, dépôt distant ou publication n'est préparé à ce stade.
 
-Le flux est documenté par Shopify. Ce dépôt fournit l'adaptation Go/PocketBase et ses tests. Les tests locaux utilisent un fournisseur simulé et une vraie base PocketBase. L'app est installée sur la dev store Basic non-Plus. Le parcours anonyme a été vérifié contre les vrais serveurs Shopify, puis l'utilisateur a confirmé son arrivée connecté dans le studio. Le serveur a lu le profil réel et créé le compte PocketBase associé. Voir [TESTS.md](TESTS.md).
+## Responsabilités
 
-L'étape d'intégration à PocketBase est également validée : le compte Shopify est maintenant enregistré dans `users`, reçoit un jeton PocketBase standard et accède à l'API avec le SDK officiel. L'utilisateur a confirmé le message « API PocketBase : accès confirmé avec le SDK officiel. » sur la vraie boutique. Les tests comparent les droits de ce compte à ceux d'un compte créé avec l'inscription et le mot de passe natifs.
+- Shopify authentifie le client et fournit son identifiant et son e-mail.
+- PocketBase crée ou retrouve le compte `users`, conserve la liaison OAuth dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
+- L'adaptation Go sécurise le parcours Shopify et conserve les identifiants bruts dans `_shopifyIdentities`.
+- Le frontend hôte possède sa page de callback, sa navigation, ses messages et sa déconnexion locale. Le SDK gère `pb.authStore` et son stockage.
 
-Le parcours passe désormais par `authWithOAuth2Code` et le fournisseur Go `shopify`, enregistré dans PocketBase. Le test réel de cette version est confirmé ; la liaison `_externalAuths` a été créée sur le compte `users` existant, sans doublon ni changement d'identifiant.
+Il n'y a plus de page HTML du studio, de SDK embarqué, de cookie de session personnalisé, de `/studio/session` ni de `/studio/logout`. Le cookie temporaire `shopify_oauth`, préfixé `__Host-` en HTTPS, sert uniquement à lier le parcours OAuth au navigateur. Sa durée est de cinq minutes ; il ne contient aucun jeton d'authentification.
 
-## Faisabilité et pistes examinées
+La mémoire tampon autour de la réponse OAuth est conservée comme protection : si un hook refuse la connexion après `e.Next()`, aucun JWT précédemment écrit ne doit parvenir au client. Elle ne fabrique aucun jeton, n'ajoute aucun cookie de session et conserve les réponses natives, notamment les challenges MFA.
 
-| Piste | Conclusion pour ce projet |
-| --- | --- |
-| Customer Account API, OAuth 2.0 et OpenID Connect | Retenue. Authentifie un client de la boutique et donne accès à son profil. Compatible avec les nouveaux comptes déjà utilisés ici. |
-| Fournisseur OIDC natif de PocketBase | Disponible et testé localement. Il peut extraire l'identité du jeton. Une adaptation reste nécessaire pour enrichir le profil via GraphQL et obtenir le parcours de navigation demandé. |
-| App proxy Shopify avec `logged_in_customer_id` signé | Alternative possible, surtout pour une intégration existante avec les anciens comptes. Nécessite une app et une transmission sûre vers le domaine du studio. Aucun avantage ici par rapport au flux natif. |
-| Customer account UI extension et Session Token API | Alternative valable si l'on veut placer le studio ou son point d'entrée dans l'espace compte Shopify. Ajoute une extension et un mécanisme de transmission vers le studio. |
-| Storefront API et `customerAccessTokenCreate` | Réservé aux anciens comptes avec mot de passe. Ne transforme pas la session navigateur existante en jeton pour le studio. Inadapté aux nouveaux comptes avec code e-mail. |
-| Multipass | Exclu, car réservé à Shopify Plus. Sert principalement à faire reconnaître par Shopify une identité déjà connue d'une application externe. |
-| Fournisseur d'identité externe commun aux deux sites | Le branchement natif d'un fournisseur externe aux comptes Shopify requiert Plus. Ce serait aussi un changement du système d'authentification demandé. |
-| App tierce faisant de Shopify un fournisseur d'identité | Dernier recours commercial possible. Le produit doit explicitement prendre en charge le sens Shopify vers application externe, les nouveaux comptes et le forfait réel. |
-| Partage de cookies, identifiant Liquid dans un lien, e-mail en paramètre | Ne fournit pas une preuve d'identité exploitable par le studio. Un visiteur peut modifier les paramètres d'un lien. Un sous-domaine commun ne donne pas accès aux cookies privés de Shopify. |
-| Admin API ou OAuth d'installation d'app seuls | Authentifient une application auprès d'une boutique, pas le client présent dans le navigateur. Peuvent enrichir un profil après une preuve d'identité, mais ne remplacent pas cette preuve. |
+## Configuration et hôte Go
 
-Les nouveaux comptes doivent être activés. Pour enregistrer le client, Shopify documente deux voies : une app avec sa propre configuration `customer_authentication`, ou un client de storefront via Headless/Hydrogen. Headless n'est donc pas un prérequis universel. La documentation distingue aussi les limites des forfaits standard, Advanced et Plus. [Configuration d'app](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication), [guide Headless](https://shopify.dev/docs/storefronts/headless/building-with-the-customer-account-api/getting-started), [référence de l'API](https://shopify.dev/docs/api/customer/latest#rate-limits).
+`main.go` reste un hôte PocketBase minimal, sans interface de démonstration. Il initialise `studio.New` dans `OnServe`, puis appelle `Register` sur le routeur. La configuration active est :
 
-Pour l'app proxy, Shopify signe les paramètres, dont l'identifiant du client. Il faut vérifier cette signature avec le secret d'app, la boutique attendue, la fraîcheur de la requête et les paramètres ambigus. Shopify supprime les cookies entrants et sortants du proxy. Une session studio doit donc être créée sur son propre domaine, via un code court à usage unique lié au navigateur. Un identifiant client signé ne doit pas devenir un jeton réutilisable dans une URL. [Documentation des app proxies](https://shopify.dev/docs/apps/build/online-store/app-proxies/authenticate-app-proxies).
+| Paramètre Go | Variable du programme principal | Rôle |
+| --- | --- | --- |
+| `ShopURL` | `SHOPIFY_SHOP_URL` | Origine HTTPS de la boutique de confiance |
+| `RedirectURL` | `SHOPIFY_REDIRECT_URL` | URL complète de la page de callback du frontend, enregistrée dans Shopify |
+| `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Identifiant du client Customer Account API |
+| `ClientSecret` | `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Vide pour notre client public PKCE ; optionnel pour un client confidential |
+| `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement strictement limitée au loopback |
 
-Des signalements sur le forum Shopify indiquent des identifiants de proxy parfois absents ou périmés avec les nouveaux comptes. Cela rend cette piste moins convaincante ici. Ces signalements ne prouvent pas que toutes les boutiques sont touchées. [Discussion Shopify](https://community.shopify.dev/t/logged-in-customer-id-erroneously-empty-with-new-customer-accounts-app-proxy/2204).
+`STUDIO_URL` n'est plus lu. L'origine autorisée est déduite de `RedirectURL`. Cette version exige un frontend et une API sur la même origine. Il ne suffit pas de changer cette URL pour prendre en charge un frontend sur un domaine tiers.
 
-Une extension de compte peut envoyer à son backend un jeton Shopify signé contenant l'identité du client, lorsque les permissions le permettent. Ce jeton est propre à ce contexte d'extension. Un simple lien dans le thème n'y donne pas accès. [Session Token API](https://shopify.dev/docs/api/customer-account-ui-extensions/latest/target-apis/platform-apis/session-token-api).
+La collection d'auth est fixée à `users`. Elle doit déjà exister et être de type auth. L'intégration ne crée pas cette collection, n'y ajoute pas de champ et ne choisit pas ses règles d'accès. Elle active OAuth2 et ajoute ou met à jour uniquement le fournisseur `shopify`, sans modifier les autres fournisseurs ni les politiques mot de passe, OTP, MFA ou durée des jetons.
 
-Shopify confirme les restrictions des [anciens jetons Storefront](https://shopify.dev/docs/api/storefront/latest/mutations/customerAccessTokenCreate), de [Multipass](https://shopify.dev/docs/api/customer-authentication/multipass) et des [fournisseurs d'identité externes](https://shopify.dev/docs/api/customer-authentication). Les anciens comptes sont dépréciés depuis le 26 février 2026 ; ce n'est pas une bonne base pour une nouvelle intégration. [Annonce officielle](https://shopify.dev/changelog/posts/legacy-customer-accounts-are-deprecated).
+La collection système `_shopifyIdentities` contient `user`, `issuer`, `subject` et `customerId`. Ses cinq règles API sont verrouillées. Les enregistrements restent accessibles au code serveur et aux superusers, pas aux utilisateurs par REST, expansion ou realtime. Les prénoms et noms ne sont ni demandés ni synchronisés.
 
-miniOrange commercialise par exemple une app « Store as IDP » pour connecter des applications externes aux comptes Shopify. C'est une piste de repli, pas une solution testée dans ce projet. La compatibilité exacte avec les nouveaux comptes, les données transmises et le contrat doivent être vérifiés avant tout achat. [Présentation de l'éditeur](https://plugins.miniorange.com/how-to-use-shopify-as-an-identity-provider-for-single-sign-on-sso).
+Les anciens nettoyages de schéma du prototype ne sont plus dans le cœur d'authentification. Les migrations historiques du dossier `migrations` sont conservées mais ne sont plus importées par `main.go` et ne s'exécutent pas à l'installation de l'adaptation. La base de test existante a déjà été migrée ; ne pas réutiliser ces migrations de nettoyage sur un autre projet.
 
-## Parcours obtenu
+## Contrat HTTP du frontend
 
-1. Le client ouvre la boutique et s'y connecte avec le code e-mail habituel.
-2. Le lien « Studio » pointe vers `https://studio.example/studio`.
-3. Sans session locale, le studio lance une navigation vers Shopify avec `prompt=none`.
-4. Si Shopify reconnaît une session utilisable, il renvoie un code sans afficher de formulaire de connexion.
-5. Le callback contrôle le state et le cookie du navigateur, puis charge le SDK officiel qui appelle `authWithOAuth2Code` sur l'endpoint OAuth2 natif de PocketBase.
-6. Le fournisseur Go Shopify échange le code, valide le jeton d'identité et interroge le profil client. PocketBase crée ou retrouve le compte, enregistre sa liaison OAuth et finalise l'authentification.
-7. La réponse native alimente `pb.authStore` et le cookie HttpOnly du studio, puis le navigateur affiche le studio connecté.
+Deux endpoints JSON préparent la connexion. Ils ne constituent pas une API de session parallèle. Tous deux exigent un en-tête `Origin` correspondant à l'origine configurée et utilisent le cookie temporaire du même navigateur.
 
-Le navigateur effectue des redirections. L'absence de nouvelle saisie dépend de la session Shopify et des règles du fournisseur. Une session expirée ou une interaction exigée par Shopify empêche une entrée entièrement automatique.
+### 1. Démarrer le parcours
 
-Pour une arrivée directe sans session Shopify, la tentative silencieuse revient au studio, qui affiche « Se connecter avec Shopify ». Ce lien démarre le flux interactif vers la page d'authentification Shopify. Il faut utiliser cette URL OAuth complète pour conserver le retour au studio, plutôt qu'un lien isolé vers `/account/login`.
+`POST /api/shopify/auth/start`, avec un corps JSON :
 
-Le comportement de `prompt=none`, le retour `login_required` et la nécessité d'une navigation de premier niveau sont décrits dans la [référence d'authentification Shopify](https://shopify.dev/docs/api/customer/latest#authorization).
-
-## Obtenir une boutique de test gratuite
-
-Une boutique commerciale en essai et une dev store sont deux parcours distincts. Aucun abonnement commercial n'est nécessaire pour cette validation.
-
-Un écran **Plan details > Trial > 3 days remaining** indique un essai commercial. À son expiration, la boutique est suspendue si aucun forfait n'a été choisi. Pour des tests gratuits durables, créer une boutique de type Dev depuis le Dev Dashboard. Le message d'indisponibilité de Headless sur un essai ne démontre pas une restriction à Shopify Plus. [Fonctionnement de l'essai commercial](https://help.shopify.com/en/manual/intro-to-shopify/pricing-plans/free-trial).
-
-1. Ouvrir le [Dev Dashboard](https://dev.shopify.com/). Il faut un compte Partner ou des permissions de développement sur une organisation marchand. Si nécessaire, commencer par le [programme Shopify Partner](https://www.shopify.com/partners).
-2. Choisir **Stores**, **Create store**, puis le type **Dev**.
-3. Nommer la boutique, par exemple `example-store`.
-4. Sélectionner **Basic** ou **Grow** comme forfait de test. Utiliser un forfait non-Plus permet de vérifier la contrainte du projet.
-5. Créer la boutique et noter son domaine `*.myshopify.com`.
-
-Si un écran impose un abonnement payant pour poursuivre, revenir au choix du type de boutique et vérifier que l'on crée bien une dev store. Les conditions d'accès et la procédure figurent dans la [documentation des dev stores](https://shopify.dev/docs/apps/build/stores/development-stores). Shopify les décrit aussi comme des [boutiques gratuites de développement](https://shopify.dev/docs/storefronts/themes/tools/development-stores).
-
-La protection par mot de passe de la boutique de développement est distincte de la connexion d'un client. Elle peut apparaître pendant le test. Elle n'est pas la preuve que le client est connecté à son compte.
-
-La boutique de test créée pour ce projet est `example-store.myshopify.com`. La CLI a confirmé son type `dev` et son forfait de fonctionnalités `basic`. Son [administration](https://admin.shopify.com/store/example-store) est dans l'organisation « My Store ». Notre app `Studio SSO` est enregistrée, publiée et installée en mode développement. L'ancienne boutique commerciale `example-store.myshopify.com` n'a pas été fermée : cette opération reste à effectuer par le propriétaire depuis [ses paramètres de forfait](https://admin.shopify.com/store/example-store/settings/plan). Ne pas supprimer l'organisation « My Store », qui contient aussi la nouvelle boutique.
-
-### Test réel préparé le 15 octobre 2026
-
-- App : [Studio SSO dans le Dev Dashboard](https://dev.shopify.com/dashboard/000000000/apps/000000000000).
-- Configuration CLI : `shopify-app/studio-sso/shopify.app.toml`, validée sans erreur.
-- Version publiée : `studio-sso-auth-20261015`.
-- Installation confirmée par `currentAppInstallation`, avec uniquement `customer_read_customers`.
-- Studio de test : <https://tunnel.example.com/studio>.
-- Configuration locale : `config.local.ps1`, ignorée par Git, client public PKCE sans secret.
-
-Les processus PocketBase, gateway et tunnel sont démarrés pour ce test. L'URL est temporaire et cesse de répondre si le tunnel ou le serveur est arrêté. Un nouveau tunnel peut produire un autre nom : modifier alors la configuration locale et le callback de l'app, valider puis redéployer.
-
-Pour reproduire la validation, ouvrir la boutique dans son navigateur, se connecter comme **client** avec le code e-mail, puis ouvrir le studio dans le même profil navigateur. La connexion à l'admin marchand n'est pas une connexion client. Refaire ensuite le test dans une fenêtre privée en ouvrant directement le studio. Ne pas communiquer les codes reçus par e-mail.
-
-Le parcours connecté a été confirmé par l'utilisateur après correction du sujet numérique Shopify. L'e-mail est présent dans le profil réel reçu ; les prénom et nom sont vides dans ce profil de test. Leur récupération est couverte par les tests simulés mais reste à confirmer avec un compte Shopify dont ces champs sont renseignés.
-
-Si le tunnel Cloudflare affiche `[email protected]`, il s'agit de sa réécriture des adresses dans le HTML. Le studio envoie `Cache-Control: no-store, no-transform` pour empêcher cette transformation, sans autoriser le script de décodage injecté par le proxy. L'adresse en base n'est pas remplacée. [Documentation Cloudflare](https://developers.cloudflare.com/waf/tools/scrape-shield/email-address-obfuscation/#troubleshoot-email-obfuscation).
-
-## Préparer Shopify
-
-La voie avec notre propre app permet d'enregistrer le client sans installer Headless. Elle utilise le mode public avec PKCE déjà pris en charge par ce prototype. Aucun secret d'app n'est envoyé pour cet échange client, et Shopify ne délivre pas de refresh token pour ce type de client. [Documentation du flux pour une app](https://shopify.dev/docs/storefronts/headless/building-with-the-customer-account-api/authenticate-customers?extension=javascript), [configuration du client](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication).
-
-1. Activer les comptes clients avec code e-mail sur la dev store.
-2. Dans le [Dev Dashboard](https://dev.shopify.com/), ouvrir **Apps > Create app > Start from Dev Dashboard** et nommer l'app `Studio SSO`.
-3. Dans l'app, ouvrir **Settings / App settings > Credentials** et relever son **Client ID**. Le secret affiché dans cette page n'est pas nécessaire au flux public Customer Account API.
-4. Préparer l'URL HTTPS du studio suivant la section sur le tunnel ci-dessous.
-5. Dans le projet d'app CLI, reprendre les champs de `shopify.app.example.toml`, y renseigner le Client ID et l'URL HTTPS. Pour ce projet, le fichier actif est `shopify-app/studio-sso/shopify.app.toml`. Le scope d'installation est `customer_read_customers`. Le callback client va dans `[customer_authentication].redirect_uris`.
-6. Avec Shopify CLI, lier la configuration à l'app puis la déployer avec `shopify app deploy`. Ce déploiement enregistre la configuration Shopify, il n'héberge pas le serveur Go. La configuration peut aussi être saisie dans l'interface du Dev Dashboard si les champs correspondants sont disponibles. Le CLI ne suffit pas sans connexion au compte autorisé à gérer l'app.
-7. Sur une dev store, `shopify app dev --path ./shopify-app/studio-sso --store example-store.myshopify.com --no-update` prépare l'installation et le preview. Dans le test effectué, la CLI a accordé automatiquement le scope. Pour une installation hors de ce mode de développement, utiliser **Install app** depuis la fiche de l'app et approuver les permissions demandées. Si la version change après l'installation, approuver les nouvelles permissions si Shopify le demande.
-8. Configurer `SHOPIFY_CUSTOMER_CLIENT_ID` avec ce Client ID et laisser `SHOPIFY_CUSTOMER_CLIENT_SECRET` vide.
-
-La création et l'installation de l'app suivent le [guide du Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard/create-apps-using-dev-dashboard). Les paramètres d'authentification marchand dans `[auth]` et ceux du client dans `[customer_authentication]` ont des rôles distincts. Le prototype n'a pas besoin d'un jeton Admin API pour lire le profil du client connecté.
-
-Dans les réglages d'accès aux données protégées de l'app, déclarer le nom et l'e-mail lorsque Shopify le demande. Un test sur une dev store ne valide pas à lui seul l'accès à ces champs sur la boutique de production. [Données client protégées](https://shopify.dev/docs/apps/launch/protected-customer-data).
-
-### Alternative avec le canal Headless
-
-Si le canal est disponible sur la boutique et que l'on préfère gérer un client de storefront :
-
-1. Dans la dev store, ouvrir **Settings > Customer accounts** et activer les comptes clients avec code e-mail.
-2. Installer le canal officiel [Headless](https://apps.shopify.com/headless).
-3. Dans Headless, créer un storefront nommé `Studio`.
-4. Ouvrir ses paramètres **Customer Account API**.
-5. Choisir un client **Confidential** si cette option est disponible pour le backend Go. Un client public avec PKCE fonctionne aussi dans ce prototype.
-6. Relever le **Client ID Customer Account API** et, pour un client confidential, son secret. Dans cette voie Headless, utiliser les identifiants affichés dans les paramètres du storefront.
-7. Autoriser la lecture des informations du client nécessaires au studio. Le prototype demande uniquement identifiant, prénom, nom et e-mail dans sa requête.
-8. Enregistrer exactement le callback HTTPS décrit ci-dessous. Pour un client public web, enregistrer également l'origine JavaScript correspondante dans Shopify.
-
-Cette procédure suit le [guide de configuration Customer Account API](https://shopify.dev/docs/storefronts/headless/building-with-the-customer-account-api/getting-started). Installer Headless pour créer le client ne demande pas de réécrire le site en Hydrogen.
-
-L'accès au nom et à l'e-mail dépend aussi des permissions et du type d'app. Une app publique peut nécessiter une validation des données client protégées. Les règles diffèrent pour les apps personnalisées et les anciennes apps créées dans l'admin. Ce point est particulièrement à contrôler si l'on choisit l'alternative app proxy avec Admin API. [Règles officielles](https://shopify.dev/docs/apps/launch/protected-customer-data).
-
-## Lancer la démonstration entièrement locale
-
-Prérequis de cette version : Go 1.27.2 minimum. Avec `GOTOOLCHAIN=auto`, Go télécharge cette version pour le projet si nécessaire. PocketBase est fixé à `v0.40.5`, `go-oidc/v3` à `v3.21.0` et `x/oauth2` à `v0.37.0`. Le `go.sum` fixe aussi les dépendances transitives. Les versions `x/net v0.61.0` et `x/crypto v0.58.0` sont utilisées pour intégrer les correctifs signalés par le contrôle de vulnérabilités.
-
-Dans un premier terminal PowerShell :
-
-```powershell
-cd D:/Workspaces/shopify-pocketbase-sso
-go run ./cmd/mockshop
+```json
+{"silent": true}
 ```
 
-Dans un second terminal :
+La réponse est `{"url":"https://..."}`. Le frontend effectue lui-même une navigation de premier niveau vers cette URL. `silent: true` demande `prompt=none` à Shopify ; `false` permet une connexion interactive. Le serveur génère et conserve state, nonce et verifier PKCE.
 
-```powershell
-cd D:/Workspaces/shopify-pocketbase-sso
-$env:SHOPIFY_SHOP_URL = 'http://127.0.0.1:8091'
-$env:STUDIO_URL = 'http://127.0.0.1:8090'
-$env:SHOPIFY_CUSTOMER_CLIENT_ID = 'demo-client'
-$env:SHOPIFY_CUSTOMER_CLIENT_SECRET = ''
-$env:SSO_ALLOW_LOOPBACK_HTTP = '1'
-go run . serve --http=127.0.0.1:8090
-```
-
-Ouvrir `http://127.0.0.1:8091`, cliquer sur la connexion de Camille, puis sur le studio. Le profil doit apparaître. Dans une session privée sans ces cookies, ouvrir directement `http://127.0.0.1:8090/studio` pour voir le parcours invité.
-
-Ce serveur simule Shopify. Il ne délivre pas de vrai code e-mail et ne valide ni l'éligibilité d'un forfait Shopify ni le partage des sessions d'une vraie boutique.
-
-Arrêter les deux terminaux avec Ctrl+C avant de passer au test réel.
-
-## Brancher une vraie boutique avec un callback HTTPS
-
-Shopify exige un callback HTTPS et ne prend pas en charge `localhost` pour cette configuration. Pour le test, on peut utiliser un tunnel temporaire. [Prérequis Shopify](https://shopify.dev/docs/storefronts/headless/building-with-the-customer-account-api/getting-started).
-
-Le dépôt contient une gateway qui publie `/studio`, ses sous-routes, `/api/realtime` et les endpoints de l'API des collections explicitement autorisées. Par défaut, seule `users` est autorisée. L'admin PocketBase, les paramètres et les endpoints de schéma restent inaccessibles par ce tunnel. La gateway ne remplace pas les règles d'accès PocketBase et n'accorde aucun droit supplémentaire.
-
-1. Installer `cloudflared` selon sa [documentation officielle](https://developers.cloudflare.com/tunnel/downloads/).
-2. Depuis le projet, lancer `go run ./cmd/gateway` dans un terminal.
-3. Dans un autre terminal, lancer :
-
-```powershell
-cloudflared tunnel --url http://127.0.0.1:8092
-```
-
-Cloudflare affiche une URL temporaire telle que `https://exemple.trycloudflare.com`. Ce mode ne demande pas de compte Cloudflare. Le nom change au redémarrage et convient au développement. [Documentation des Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
-
-Attention, les Quick Tunnels ne prennent pas en charge les Server-Sent Events utilisés par le realtime PocketBase. L'authentification et l'API HTTP sont testables avec cette URL ; pour le realtime distant, utiliser un hébergement ou un tunnel compatible SSE. Le realtime a été testé directement en local. [Limites officielles](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
-
-4. Pour notre propre app, renseigner l'URL dans `[customer_authentication].redirect_uris` du fichier `shopify.app.toml`, puis publier cette configuration. Pour la voie Headless, utiliser ses paramètres Customer Account API. L'adresse de retour est :
-
-```text
-Callback URL : https://exemple.trycloudflare.com/studio/callback
-Origine JavaScript, si client public web : https://exemple.trycloudflare.com
-```
-
-Pour la voie app, les requêtes d'échange sont faites par le backend Go. Le champ `javascript_origins` n'est pas nécessaire à ce prototype.
-
-5. Copier `config.example.ps1` vers `config.local.ps1`, puis renseigner le domaine de la boutique, l'URL HTTPS et le Client ID. Pour la voie app, garder le secret vide. Pour un client Headless confidential, utiliser la ligne `Read-Host` fournie pour saisir son secret sans le placer dans l'historique.
-6. Charger la configuration et démarrer PocketBase :
-
-```powershell
-. ./config.local.ps1
-go run . serve --http=127.0.0.1:8090
-```
-
-7. Dans le navigateur, ouvrir la boutique de test, se connecter comme client avec une adresse dont on peut recevoir le code, puis ouvrir `https://exemple.trycloudflare.com/studio` dans le même profil navigateur.
-
-Les origines configurées ne doivent avoir ni chemin ni slash final. Le callback doit, lui, inclure `/studio/callback`. Ne pas activer `SSO_ALLOW_LOOPBACK_HTTP` pour le test réel. Le tunnel transmet les échanges de test via Cloudflare.
-
-Pour le lien boutique, utiliser cette même adresse du studio dans la navigation ou le thème. En production, elle sera remplacée par un domaine stable.
-
-## Intégrer le code au studio existant
-
-Le package `internal/studio` contient le flux. Dans le hook `OnServe`, `studio.New` charge les métadonnées de la boutique, puis `Register` ajoute les routes. `main.go` donne un exemple complet. L'adaptation à une autre version de PocketBase doit être vérifiée avant de copier le code.
-
-### Compte et règles PocketBase
-
-La collection d'auth est fixée à `users`. L'option `Config.AuthCollection` et la variable de configuration du flux `STUDIO_AUTH_COLLECTION` ont été retirées. L'intégration n'ajoute aucun champ de profil : elle synchronise uniquement l'e-mail natif. Les identifiants techniques Shopify sont conservés dans une collection de base système distincte, `_shopifyIdentities`. Les comptes natifs sans liaison Shopify restent possibles. Le fournisseur refuse les appels ciblant d'autres collections, y compris `_superusers`, par nom comme par identifiant.
-
-`_shopifyIdentities` contient une relation obligatoire `user` vers `users`, puis les champs texte `issuer`, `subject` et `customerId`. Ce nom distingue les identités externes des comptes du studio dans `users` et des liaisons OAuth natives dans `_externalAuths`. Le couple émetteur/sujet est unique, ainsi que le couple utilisateur/émetteur. Supprimer un utilisateur supprime sa ligne privée par cascade. Les règles de liste, lecture, création, modification et suppression sont toutes verrouillées, avec la valeur `null`. Un compte utilisateur ne peut donc ni lire ni écrire ces données, même par expansion de relation ou abonnement realtime.
-
-Fixer `users` est un choix de cette intégration, pas une obligation du parcours OAuth natif. PocketBase permet plusieurs collections d'authentification distinctes. [Collections d'auth PocketBase](https://pocketbase.io/docs/collections/#auth-collection).
-
-Le préfixe `_` ne suffit ni pour la confidentialité ni pour le classement dans l'admin. La collection porte aussi `system: true` : elle apparaît dans la section **System**, repliée par défaut hors recherche, et PocketBase protège son nom, sa suppression et ses règles API. Un superuser peut toujours consulter les comptes dans cette section. Si elle était épinglée, la désépingler pour la retrouver uniquement dans **System**. La mise à niveau d'une ancienne collection ordinaire conserve son identifiant et ses enregistrements. Le code valide d'abord son schéma, puis utilise `SaveNoValidate` uniquement pour la promotion de l'attribut `System`, dont PocketBase interdit la modification par validation normale. [Attribut système PocketBase](https://pocketbase.io/jsvm/interfaces/core.Collection.html#system).
-
-Les règles et les politiques existantes de la collection sont conservées : inscription, lecture, modification, `AuthRule`, durée des jetons, mot de passe, OTP, MFA et alertes. L'intégration active OAuth2 et ajoute ou met à jour uniquement son fournisseur `shopify`, sans supprimer les autres fournisseurs. Une première inscription Shopify doit satisfaire `CreateRule` et les hooks de création natifs. Les champs d'identité Shopify sont gérés par le serveur ; les requêtes publiques de création ou modification ne peuvent pas les définir.
-
-La liaison autorisée repose sur l'identité Shopify, jamais sur le seul e-mail ou sur le compte déjà connecté dans `Authorization`. PocketBase peut trouver ces candidats dans son traitement OAuth natif ; notre hook les refuse s'ils ne correspondent pas à l'identité Shopify existante. Un conflit donne une erreur `409`, sans fusion automatique. L'identifiant du fournisseur dans `_externalAuths` est un SHA-256 du couple émetteur/sujet, avec séparateur non ambigu. Le sujet Shopify exact reste disponible côté serveur dans `_shopifyIdentities.subject`, et l'identifiant GraphQL du client dans `customerId`. Ces identifiants bruts ne figurent plus dans la réponse OAuth, le profil public ou la page HTML.
-
-Les appels API ultérieurs suivent le fonctionnement PocketBase habituel : le middleware charge `e.Auth` depuis le jeton, les règles utilisent `@request.auth`, et les hooks des requêtes API, des modèles et d'enrichissement s'appliquent normalement. Les tests couvrent aussi les relations de propriétaire et le filtrage realtime. Rien n'est accordé implicitement à un compte parce qu'il provient de Shopify.
-
-L'ancienne collection de démonstration `studio_customers` est conservée. Il n'y a ni migration automatique de ses comptes ni réaffectation de ses relations. Une sauvegarde SQLite cohérente a été créée avant l'évolution du schéma dans `pb_backups/before-native-auth-20261015.db`, ignorée par Git. Dans un projet existant, vérifier les champs obligatoires et les types des champs avant intégration. Un champ Shopify déjà présent avec un type incompatible fait échouer le démarrage plutôt que modifier ce type.
-
-Pour les comptes déjà créés dans `users` par le prototype précédent, le démarrage copie les trois anciens champs `shopify_issuer`, `shopify_sub` et `shopify_customer_id` vers `_shopifyIdentities`, puis retire ces champs de `users`. La création du schéma et la copie s'effectuent dans une même transaction. Une identité incomplète, un conflit ou une règle dépendant des anciens champs provoque un échec plutôt qu'une migration partielle ou une réécriture de la règle. Les identifiants des utilisateurs, leurs relations métier et leurs liaisons `_externalAuths` existantes sont conservés. Si une ancienne identité n'a pas encore de liaison native, PocketBase la crée à la connexion OAuth suivante. Une sauvegarde cohérente précède chaque évolution de la démonstration, notamment `pb_backups/before-native-oauth2-20261015.db` et `pb_backups/before-private-accounts-20261015.db`.
-
-La migration Go `1792097400_rename_shopify_identities.go` renomme l'ancienne collection `_shopifyAccounts` et sa table, sans recréer la collection ni ses enregistrements. Elle refuse de fusionner si les deux noms existent déjà. Les migrations Go doivent être importées par le programme principal et exécutées par PocketBase avant `OnServe`, comme dans `main.go`. Les anciennes migrations déjà appliquées restent inchangées ; leur ancienne option de nettoyage ne configure plus l'authentification. La sauvegarde `pb_backups/before-identities-users-only-20261015.db` précède le renommage de la démonstration.
-
-### Profil limité à l'e-mail
-
-Le studio ne demande, ne synchronise et n'affiche plus de prénom ou de nom Shopify. La requête Customer Account API ne demande que `id` et `emailAddress { emailAddress }`. Aucun scope ou mécanisme de récupération de nom n'est ajouté. [Schéma Customer officiel](https://shopify.dev/docs/api/customer/latest/objects/Customer).
-
-Les champs `first_name` et `last_name` ajoutés par le prototype ont été supprimés par une migration Go PocketBase ponctuelle, importée uniquement par le `main` de la démonstration. PocketBase journalise cette migration et ne la rejoue pas à chaque démarrage. Le package d'authentification ne supprime ni ne modifie les éventuels champs de nom définis par un projet hôte. Une règle dépendant d'un ancien champ fait échouer le nettoyage, sans réécriture de la règle. Les anciennes valeurs ne sont récupérables qu'en restaurant la sauvegarde `pb_backups/before-system-email-only-20261015.db`.
-
-### Connexion OAuth native avec redirection
-
-Le point d'entrée reste `/studio` pour une tentative silencieuse ou `/studio/auth` pour une connexion interactive. Le callback `/studio/callback` contrôle le state, l'expiration et le cookie de navigateur. Il sert ensuite une page privée avec `/studio/callback.js`, qui efface les paramètres de l'adresse et appelle :
+Exemple avec une instance existante du SDK :
 
 ```javascript
-await pb.collection(collection).authWithOAuth2Code(
-  'shopify', code, verifier, redirectURL,
-);
-```
-
-Ces paramètres proviennent du callback vérifié côté serveur, pas de valeurs choisies librement par le frontend. Le code Shopify réel est échangé par le fournisseur dans l'endpoint natif `/api/collections/{collection}/auth-with-oauth2`. Il ne s'agit pas d'un endpoint parallèle qui fabriquerait son propre compte ou jeton.
-
-`authWithOAuth2Code` convient au parcours de navigation de premier niveau déjà retenu. La variante `authWithOAuth2` avec popup dépend d'une connexion realtime pendant l'authentification et n'est pas utilisée ici. Le fournisseur exige un code préparé par notre callback et lié au même navigateur ; un appel direct avec un code non préparé est refusé. Le SDK utilise son mécanisme standard d'enregistrement de la réponse dans l'auth store. [Référence du SDK](https://github.com/pocketbase/js-sdk#recordservice), [interface des fournisseurs Go](https://pkg.go.dev/github.com/pocketbase/pocketbase@v0.40.5/tools/auth#Provider).
-
-Le client public Shopify n'a toujours aucun secret. PocketBase `0.40.5` impose toutefois un champ `clientSecret` non vide dans la configuration d'un fournisseur. Le code y inscrit le marqueur public `public-pkce-no-secret`. Ce n'est pas un secret et le fournisseur ne le transmet jamais à Shopify : il utilise le client PKCE configuré côté serveur. Les tests du fournisseur simulé refusent expressément tout secret ou en-tête Basic dans ce mode. Les identifiants d'un éventuel client confidential restent, eux aussi, pilotés par la configuration serveur.
-
-### Session et SDK officiel
-
-Le serveur rend une page connectée grâce à un cookie HttpOnly. Si le frontend doit utiliser le SDK JavaScript PocketBase sur la même origine, il peut récupérer le jeton local ainsi :
-
-```javascript
-const response = await fetch('/studio/session', {
+const { url } = await pb.send('/api/shopify/auth/start', {
   method: 'POST',
-  credentials: 'same-origin',
+  body: { silent: true },
 });
-if (!response.ok) throw new Error('Connexion Shopify requise');
-const { token, record } = await response.json();
-pb.authStore.save(token, record);
-const profile = await pb.collection(record.collectionName).getOne(record.id);
+window.location.assign(url);
 ```
 
-Ce code suppose une instance `pb` du SDK officiel. Le prototype sert ce SDK, version `0.28.1` non modifiée, depuis `/studio/pocketbase.es.mjs` et l'utilise dans `/studio/client.js`. Aucun CDN n'est nécessaire. Le SDK transmet ensuite le jeton dans l'en-tête d'authentification standard ; le cookie seul n'authentifie pas les endpoints de l'API. La réponse de session est privée et réservée aux requêtes de même origine.
+### 2. Vérifier le retour Shopify
 
-Le jeton est un jeton PocketBase, pas un jeton Shopify. Pour publier une collection métier via la gateway de test, démarrer celle-ci avec, par exemple, `$env:STUDIO_PUBLIC_COLLECTIONS = 'users,documents'`. Définir ensuite les règles PocketBase de cette collection, par exemple `owner = @request.auth.id` pour les données privées du propriétaire. La liste de collections métier publiée par la gateway reste indépendante du fournisseur d'authentification, qui utilise toujours `users`. La [documentation PocketBase](https://pocketbase.io/docs/authentication/) explique les sessions SDK et les méthodes OAuth natives.
+Shopify revient sur `RedirectURL`, une page fournie par le frontend hôte. Cette page doit extraire les paramètres puis les effacer de la barre d'adresse avant de charger d'autres ressources. Elle doit aussi empêcher la mise en cache et les fuites de référent de cette URL sensible.
 
-### Hooks natifs et adaptation Shopify
+Le frontend transmet `state`, `code` et, en cas d'échec Shopify, `error` à `POST /api/shopify/auth/complete`. Le serveur vérifie le navigateur, le state et son expiration, puis prépare le code à usage unique. Il renvoie les arguments nécessaires au SDK, jamais un jeton PocketBase.
 
-Le parcours déclenche `OnRecordAuthWithOAuth2Request`, puis, pour un nouveau compte, le traitement natif de création avec `OnRecordCreateRequest`, ses règles et sa transaction. PocketBase enregistre la liaison `_externalAuths`, puis applique `AuthRule`, `OnRecordAuthRequest`, la MFA, les alertes et l'enrichissement de la réponse. Les hooks de l'application peuvent refuser la connexion ou l'inscription. Un refus de hook, même après `e.Next`, ne délivre pas de cookie ou de jeton de succès.
+En cas d'erreur OAuth attendue, la réponse JSON contient par exemple `{"error":"login_required"}`. L'application choisit alors d'afficher son lien de connexion ou de relancer un parcours interactif. L'adaptation ne choisit aucune page à sa place.
 
-L'adaptation spécifique garde le contrôle du démarrage et du callback, valide Shopify, synchronise le profil et refuse les liaisons automatiques par e-mail. La synchronisation d'un profil existant utilise `Save` et les hooks de modèle ; elle ne simule pas une requête publique `PATCH` ni ses hooks de requête. Les tokens Shopify ne sont pas inclus dans les métadonnées de la réponse OAuth PocketBase. L'e-mail du fournisseur n'est déclaré vérifié que si le claim Shopify vérifié correspond au profil.
+### 3. Authentifier avec le SDK officiel
 
-Une MFA activée renvoie le challenge natif `401` avec `mfaId`, sans session anticipée. La page de callback signale ce besoin, mais l'interface de saisie du second facteur n'est pas encore fournie ; ce challenge peut être terminé avec les méthodes natives.
+Exemple de fonction appelée depuis la page de callback du frontend :
 
-Le package est encore sous `internal/studio`, dans un projet de démonstration. Ce n'est pas encore une dépendance Go installable dans un autre module. L'extraction en module indépendant et les migrations versionnées restent une étape distincte de l'alignement API réalisé ici.
+```javascript
+async function finishShopifyLogin(pb) {
+  const query = new URLSearchParams(window.location.search);
+  history.replaceState(null, '', window.location.pathname);
+  const completion = await pb.send('/api/shopify/auth/complete', {
+    method: 'POST',
+    body: {
+      state: query.get('state') ?? '',
+      code: query.get('code') ?? '',
+      error: query.get('error') ?? '',
+    },
+  });
+  if (completion.error) return completion;
 
-Les noms proviennent de la requête `customer` de la Customer Account API. Les champs sont documentés dans l'objet [Customer](https://shopify.dev/docs/api/customer/latest/objects/Customer). Ils peuvent être vides si le client ne les a pas renseignés.
+  pb.authStore.clear();
+  return pb.collection('users').authWithOAuth2Code(
+    'shopify', completion.code, completion.codeVerifier, completion.redirectURL,
+  );
+}
+```
 
-## Limites du prototype à conserver en tête
+Cet appel atteint `/api/collections/users/auth-with-oauth2`. Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère le profil. La réponse d'authentification, les erreurs et les éventuels challenges MFA restent ceux de PocketBase. Le frontend doit traiter ces challenges s'il active la MFA.
 
-La session utilise maintenant la durée et le renouvellement normaux des jetons de la collection PocketBase. `auth-refresh` et `/studio/session` peuvent la renouveler sans nouvelle authentification Shopify. La limite fixe de 15 minutes non renouvelables du premier prototype a été supprimée. Les jetons Shopify, y compris un éventuel refresh token, sont toujours abandonnés après la lecture du profil.
+Le SDK enregistre automatiquement le jeton et le compte dans son auth store. Son `LocalAuthStore` utilise le stockage du navigateur lorsqu'il est disponible. Les lectures, le renouvellement et le realtime passent ensuite par les API natives ; aucun appel de réhydratation via un cookie serveur n'est nécessaire. La déconnexion locale utilise `pb.authStore.clear()` et, si nécessaire, la fermeture des abonnements realtime du frontend. Elle ne déconnecte pas Shopify et ne révoque pas à elle seule les copies déjà émises du jeton PocketBase. [SDK officiel](https://github.com/pocketbase/js-sdk#auth-store), [authentification PocketBase](https://pocketbase.io/docs/authentication/).
 
-Les informations de profil sont synchronisées à chaque authentification Shopify du studio. Elles ne sont pas actualisées en continu pendant une session locale.
+## Sécurité et limites conservées
 
-La déconnexion du studio efface son cookie et le frontend vide `pb.authStore`. Elle ne déconnecte pas Shopify. Une déconnexion ou un changement de compte sur la boutique ne révoque pas une session PocketBase déjà créée. Un jeton PocketBase copié reste utilisable et renouvelable tant que PocketBase le juge valide. La durée maximale depuis la dernière connexion Shopify n'est donc plus limitée par ce prototype. Une déconnexion globale ou une réauthentification Shopify périodique demanderait une politique supplémentaire.
+Les contrôles de state, navigateur, PKCE, nonce, signature JWKS, algorithme, émetteur, audience et expiration restent actifs. Les sujets Shopify numériques sont normalisés seulement après vérification de signature, sans conversion en flottant ni perte de précision.
 
-Les tentatives OAuth durent cinq minutes et sont stockées en mémoire du processus. Un redémarrage annule les connexions en cours. Ce stockage suppose une instance, ou des sessions de routage affinitaires ; pour plusieurs instances, le remplacer par un stockage partagé à consommation atomique. Deux connexions simultanées dans deux onglets peuvent obliger à recommencer la première.
+Un e-mail identique ou un compte présent dans `Authorization` ne suffisent pas à fusionner une identité Shopify avec un compte existant. Seule une liaison d'identité exacte est acceptée ; un conflit renvoie HTTP 409. Les tokens Shopify ne sont pas exposés dans les métadonnées OAuth ou stockés pour une réutilisation ultérieure. Les sessions PocketBase et Shopify restent indépendantes.
 
-Les tests valident le moteur MFA et les hooks généraux d'authentification, pas une interface complète de gestion des facteurs ni un envoi réel d'e-mails d'alerte. Configurer et tester le transport mail de PocketBase dans le projet cible si ces fonctions sont activées.
+Les transactions de connexion sont encore stockées en mémoire dans une instance Go. Un redémarrage interrompt les parcours en cours. Une exploitation multi-instance exige une stratégie explicite pour partager ou router ces transactions ; ce nettoyage ne l'implémente pas.
 
-Les callbacks ne passent pas dans le journal d'activité PocketBase et le mode SQL debug est désactivé par défaut. Au déploiement, appliquer la même exclusion aux logs du reverse proxy et configurer les limites de requêtes. Le code valide les signatures OIDC avec JWKS, l'émetteur, l'audience, l'expiration, le nonce, le state et PKCE. [Bibliothèque go-oidc](https://pkg.go.dev/github.com/coreos/go-oidc/v3/oidc), [bibliothèque OAuth Go](https://pkg.go.dev/golang.org/x/oauth2).
+Le service expose uniquement le parcours `authWithOAuth2Code` avec redirection. La variante popup `authWithOAuth2` n'est pas prise en charge. Aucun contrôle périodique de la session Shopify, interface MFA, frontend ou synchronisation globale des déconnexions n'est ajouté.
 
-### Compatibilité avec les sujets Shopify numériques
+Les exigences Customer Account API restent inchangées : nouveaux comptes clients activés, callback enregistré, scope `customer_read_customers` et accès requis aux données client protégées. Notre app existante et la boutique de test ne sont pas supprimées. [Authentification Shopify](https://shopify.dev/docs/api/customer/latest#authentication).
 
-Le test réel a révélé un jeton dont `sub` est un nombre JSON, alors que `go-oidc` attend une chaîne. Shopify a reconnu un signalement équivalent et indiqué mener une investigation le 12 octobre 2026. Ce n'est pas une propriété garantie de tous les jetons Shopify. [Discussion officielle](https://community.shopify.dev/t/customer-account-sign-in-fails-numeric-sub-in-id-token-payload/38544), [type prévu par OpenID Connect](https://openid.net/specs/openid-connect-core-1_0.html#IDToken).
+## Tests et historique
 
-L'adaptateur `shopifySubjectKeySet` s'exécute dans le vérificateur `go-oidc`. La bibliothèque filtre d'abord l'algorithme, puis l'adaptateur fait vérifier la signature du JWT original par le JWKS. Il convertit seulement ensuite un `sub` entier positif en sa chaîne décimale exacte pour le décodage des claims. Il ne convertit pas les autres champs et ne passe jamais par un nombre flottant. Les fractions, exposants, nombres négatifs et types inattendus sont refusés. Les sujets déjà textuels restent inchangés.
+Voir [TESTS.md](TESTS.md) pour les contrôles du code actuel. Le fournisseur simulé est réservé aux tests Go ; il n'existe plus de commande lançant une fausse boutique ni de gateway publique de démonstration.
 
-Le vérificateur conserve ses contrôles d'émetteur, d'audience, d'expiration et de `nbf`, puis le fournisseur Shopify vérifie le nonce et `at_hash` s'il est présent. Aucun mode `Skip*` n'est activé. Cette adaptation dépend du fonctionnement de la version `go-oidc v3.21.0` fixée dans le projet. Conserver les tests de non-régression lors de toute mise à jour de cette dépendance.
-
-## Validation sur la boutique de développement
-
-Vérifier les cas suivants avec les mêmes domaines et le forfait non-Plus choisis pour le projet :
-
-- Boutique connectée, aucune session studio : arrivée connectée au studio sans nouveau code e-mail.
-- Arrivée directe dans un profil navigateur privé : affichage du lien, connexion Shopify, puis retour connecté au studio.
-- Nom ou e-mail modifié dans Shopify : données mises à jour après une nouvelle authentification du studio.
-- Session Shopify expirée et aucune session PocketBase valide : le studio propose la connexion, sans boucle de redirection. Une session PocketBase valide reste indépendante de Shopify.
-- Déconnexion studio, changement de client dans Shopify et session studio déjà ouverte : comportement conforme aux limites décrites ci-dessus.
-- Chrome et Safari, puis un téléphone, pour vérifier les cookies et redirections dans les navigateurs réellement utilisés.
-
-Les éléments nécessaires à ce test sont le domaine public de la dev store, le Client ID de l'app ou du client Headless retenu, une URL HTTPS enregistrée et un compte client de test. Le secret n'est requis que pour la voie Headless confidential. Tout secret et le code reçu par e-mail doivent rester dans la configuration locale ou être saisis par le propriétaire du compte.
+L'enquête initiale et les essais précédents sont conservés dans [l'historique du prototype](docs/prototype-history.md) et [l'historique des validations](docs/prototype-tests.md). Leurs anciennes routes et URL ne décrivent pas l'interface actuelle.

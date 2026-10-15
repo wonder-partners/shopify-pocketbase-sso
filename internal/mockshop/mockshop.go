@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"html/template"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -100,9 +99,6 @@ func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Redirect(w, r, resume, 303)
-	case "/":
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		home.Execute(w, map[string]string{"Studio": m.Callback[:len(m.Callback)-len("/callback")]})
 	default:
 		http.NotFound(w, r)
 	}
@@ -122,8 +118,7 @@ func (m *Mock) authorize(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, u.String(), 302)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		login.Execute(w, "/login?resume="+url.QueryEscape(r.URL.RequestURI()))
+		respond(w, map[string]bool{"login_required": true})
 		return
 	}
 	code := random()
@@ -224,6 +219,3 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	respond(w, map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": 3600, "id_token": id})
 }
-
-var login = template.Must(template.New("login").Parse(`<!doctype html><html lang="fr"><meta charset="utf-8"><title>Simulation Shopify</title><h1>Connexion Shopify simulée</h1><p>Test local uniquement. Aucun vrai code par e-mail.</p><form method="post" action="{{.}}"><button>Connexion de Camille</button></form></html>`))
-var home = template.Must(template.New("home").Parse(`<!doctype html><html lang="fr"><meta charset="utf-8"><title>Boutique simulée</title><h1>Boutique simulée</h1><p>Cette page ne contacte pas Shopify.</p><form method="post" action="/login"><button>Connexion de Camille à la boutique</button></form><p><a href="{{.Studio}}">Ouvrir le studio</a></p></html>`))

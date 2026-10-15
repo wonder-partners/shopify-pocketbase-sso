@@ -17,13 +17,13 @@ func TestOfficialPocketBaseJavaScriptSDK(t *testing.T) {
 	}
 	f := setup(t, "", "numeric:")
 	documentsCollection(f)
-	f.loginStudio()
-	token, shop := f.session()
+	f.login()
+	token, shop := f.authRecord()
 	native := nativeSignup(f, "sdk-native@example.test")
 	nativeID := native.Record["id"].(string)
 	shopDoc := createDocument(f, token, shop.Id)
 	nativeDoc := createDocument(f, native.Token, nativeID)
-	input, _ := json.Marshal(map[string]any{"url": f.studio.URL, "accounts": []map[string]string{
+	input, _ := json.Marshal(map[string]any{"url": f.api.URL, "accounts": []map[string]string{
 		{"id": shop.Id, "token": token, "otherDoc": nativeDoc},
 		{"id": nativeID, "token": native.Token, "otherDoc": shopDoc},
 	}})
@@ -42,11 +42,11 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 	}
 	f := setup(t, "", "numeric:")
 	f.loginShop()
-	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	input := callbackData(t, page.body)
-	input["url"] = f.studio.URL
-	u, _ := url.Parse(f.studio.URL)
+	input["url"] = f.api.URL
+	u, _ := url.Parse(f.api.URL)
 	var cookies []string
 	for _, c := range f.client.Jar.Cookies(u) {
 		cookies = append(cookies, c.Name+"="+c.Value)

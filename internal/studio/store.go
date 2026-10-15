@@ -15,54 +15,19 @@ import (
 
 const collectionName = "users"
 
-// Don't add profile fields to the host auth collection. Move old Shopify
-// identities transactionally; preserve all user ids and rules.
+// The host owns users, its fields and its access rules. Only provision the
+// integration's private identities collection.
 func ensureCollection(app core.App) error {
-	err := app.RunInTransaction(func(tx core.App) error {
+	return app.RunInTransaction(func(tx core.App) error {
 		c, err := tx.FindCollectionByNameOrId(collectionName)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err != nil {
 			return err
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			c = core.NewAuthCollection(collectionName)
-			c.ViewRule = types.Pointer("id = @request.auth.id")
 		}
 		if !c.IsAuth() || c.Name != collectionName {
 			return errors.New("Shopify requires the users auth collection")
 		}
-		if err := tx.Save(c); err != nil {
-			return err
-		}
-		if err := ensureAccountsCollection(tx, c); err != nil {
-			return err
-		}
-		if err := migrateLegacyAccounts(tx, c); err != nil {
-			return err
-		}
-		return nil
+		return ensureAccountsCollection(tx, c)
 	})
-	if err != nil {
-		return err
-	}
-	guard := func(e *core.RecordRequestEvent) error {
-		if e.HasSuperuserAuth() {
-			return e.Next()
-		}
-		var body map[string]any
-		if err := e.BindBody(&body); err != nil {
-			return err
-		}
-		// Reject legacy field submissions too; these keys no longer belong to users.
-		for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {
-			if _, exists := body[field]; exists {
-				return e.ForbiddenError("Shopify identity fields are managed by the server.", nil)
-			}
-		}
-		return e.Next()
-	}
-	app.OnRecordCreateRequest(collectionName).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
-	app.OnRecordUpdateRequest(collectionName).Bind(&hook.Handler[*core.RecordRequestEvent]{Id: "studio_shopify_identity", Func: guard})
-	return nil
 }
 
 func (s *Service) configureProvider() error {
@@ -175,9 +140,6 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		delete(e.CreateData, "verified")
 		delete(e.CreateData, "password")
 		delete(e.CreateData, "passwordConfirm")
-		for _, field := range legacyIdentityFields {
-			delete(e.CreateData, field)
-		}
 	} else {
 		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
 		r.SetEmail(p.profile.EmailAddress.Email)

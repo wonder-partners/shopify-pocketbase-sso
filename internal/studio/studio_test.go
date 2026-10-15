@@ -5,13 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,25 +19,27 @@ import (
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/auth"
+	"github.com/pocketbase/pocketbase/tools/types"
 	"golang.org/x/oauth2"
 	"studio-sso/internal/mockshop"
 )
 
 type fixture struct {
-	t            *testing.T
-	studio, shop *httptest.Server
-	app          *pocketbase.PocketBase
-	s            *Service
-	client       *http.Client
-	mock         *mockshop.Mock
+	t         *testing.T
+	api, shop *httptest.Server
+	app       *pocketbase.PocketBase
+	s         *Service
+	client    *http.Client
+	mock      *mockshop.Mock
+	auth      authResult
 }
 
 func setup(t *testing.T, secret, fault string) *fixture {
 	t.Helper()
-	f := &fixture{t: t, studio: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
-	studioURL := "http://" + f.studio.Listener.Addr().String()
+	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
+	studioURL := "http://" + f.api.Listener.Addr().String()
 	shopURL := "http://" + f.shop.Listener.Addr().String()
-	m, err := mockshop.New(shopURL, studioURL+"/studio/callback", secret, fault)
+	m, err := mockshop.New(shopURL, studioURL+"/oauth/callback", secret, fault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,15 @@ func setup(t *testing.T, secret, fault string) *fixture {
 			t.Error(err)
 		}
 	})
-	f.s, err = New(context.Background(), f.app, Config{ShopURL: shopURL, StudioURL: studioURL, ClientID: mockshop.ClientID, ClientSecret: secret, AllowLoopbackHTTP: true})
+	users, err := f.app.FindCollectionByNameOrId("users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	users.ViewRule = types.Pointer("id = @request.auth.id")
+	if err := f.app.Save(users); err != nil {
+		t.Fatal(err)
+	}
+	f.s, err = New(context.Background(), f.app, Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, ClientSecret: secret, AllowLoopbackHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,9 +81,9 @@ func setup(t *testing.T, secret, fault string) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.studio.Config.Handler = mux
-	f.studio.Start()
-	t.Cleanup(f.studio.Close)
+	f.api.Config.Handler = mux
+	f.api.Start()
+	t.Cleanup(f.api.Close)
 	jar, _ := cookiejar.New(nil)
 	f.client = &http.Client{Jar: jar, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return f
@@ -120,6 +128,9 @@ func (f *fixture) expect(r response, status int) {
 	if r.status != status {
 		f.t.Fatalf("expected HTTP %d, got %d: %s", status, r.status, r.body)
 	}
+	if status >= 400 && strings.Contains(r.body, `"token"`) {
+		f.t.Fatal("an error response exposed an auth token")
+	}
 }
 
 func (f *fixture) loginShop() {
@@ -127,28 +138,53 @@ func (f *fixture) loginShop() {
 	f.expect(f.request("POST", f.shop.URL+"/login", "", "", ""), 303)
 }
 
-func (f *fixture) authorize(path string) string {
+func (f *fixture) start(silent bool) response {
 	f.t.Helper()
-	start := f.request("GET", f.studio.URL+path, "", "", "")
-	f.expect(start, 302)
+	body := string(mustJSON(f.t, map[string]bool{"silent": silent}))
+	start := f.request("POST", f.api.URL+"/api/shopify/auth/start", f.api.URL, body, "")
+	f.expect(start, 200)
+	var result struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal([]byte(start.body), &result) != nil || result.URL == "" {
+		f.t.Fatal("missing Shopify authorization URL")
+	}
+	start.location = result.URL
+	return start
+}
+
+func (f *fixture) authorize(silent bool) string {
+	f.t.Helper()
+	start := f.start(silent)
 	a := f.request("GET", start.location, "", "", "")
 	f.expect(a, 302)
 	return a.location
 }
 
-func (f *fixture) loginStudio() response {
+func (f *fixture) login() response {
 	f.t.Helper()
 	f.loginShop()
-	cb := f.authorize("/studio/auth")
+	cb := f.authorize(false)
 	r := f.completeCallback(cb)
 	f.expect(r, 200)
 	return r
 }
 
-// Exercise the real native OAuth endpoint, as callback.js does in a browser.
+func (f *fixture) callback(callback string) response {
+	f.t.Helper()
+	u, err := url.Parse(callback)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	q := u.Query()
+	body := string(mustJSON(f.t, map[string]string{"state": q.Get("state"), "code": q.Get("code"), "error": q.Get("error")}))
+	return f.request("POST", f.api.URL+"/api/shopify/auth/complete", f.api.URL, body, "")
+}
+
+// Exercise the same JSON preparation and native OAuth endpoint as a host frontend.
 func (f *fixture) completeCallback(callback string) response {
 	f.t.Helper()
-	page := f.request("GET", callback, "", "", "")
+	page := f.callback(callback)
 	if page.status != 200 {
 		return page
 	}
@@ -156,40 +192,34 @@ func (f *fixture) completeCallback(callback string) response {
 	collection := data["collection"]
 	delete(data, "collection")
 	body, _ := json.Marshal(data)
-	return f.request("POST", f.studio.URL+"/api/collections/"+collection+"/auth-with-oauth2", f.studio.URL, string(body), "")
+	r := f.request("POST", f.api.URL+"/api/collections/"+collection+"/auth-with-oauth2", f.api.URL, string(body), "")
+	if r.status == 200 {
+		f.auth = decodeAuth(f.t, r)
+	}
+	for _, cookie := range r.cookies {
+		if cookie.Name != f.s.flowCookieName() || cookie.MaxAge >= 0 {
+			f.t.Fatal("OAuth response created a session cookie")
+		}
+	}
+	return r
 }
 
 func callbackData(t *testing.T, page string) map[string]string {
 	t.Helper()
-	data := map[string]string{"provider": providerName}
-	for attribute, field := range map[string]string{"code": "code", "verifier": "codeVerifier", "redirect": "redirectURL", "collection": "collection"} {
-		match := regexp.MustCompile(`data-` + attribute + `="([^"]*)"`).FindStringSubmatch(page)
-		if len(match) != 2 {
-			t.Fatal("callback page is missing native OAuth parameters")
-		}
-		data[field] = html.UnescapeString(match[1])
+	data := map[string]string{}
+	if json.Unmarshal([]byte(page), &data) != nil || data["code"] == "" || data["codeVerifier"] == "" {
+		t.Fatal("missing native OAuth completion parameters")
 	}
 	return data
 }
 
-func (f *fixture) session() (string, *core.Record) {
+func (f *fixture) authRecord() (string, *core.Record) {
 	f.t.Helper()
-	r := f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", "")
-	f.expect(r, 200)
-	var data struct {
-		Token  string `json:"token"`
-		Record struct {
-			ID string `json:"id"`
-		} `json:"record"`
-	}
-	if err := json.Unmarshal([]byte(r.body), &data); err != nil {
-		f.t.Fatal(err)
-	}
-	record, err := f.app.FindRecordById(collectionName, data.Record.ID)
+	record, err := f.app.FindAuthRecordByToken(f.auth.Token, core.TokenTypeAuth)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return data.Token, record
+	return f.auth.Token, record
 }
 
 func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
@@ -200,11 +230,11 @@ func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := setup(t, secret, "")
-			callback := f.loginStudio()
+			callback := f.login()
 			if decodeAuth(t, callback).Token == "" {
 				t.Fatal("missing native OAuth response")
 			}
-			token, record := f.session()
+			token, record := f.authRecord()
 			if record.Email() != mockshop.Email || !record.Verified() {
 				t.Fatalf("wrong profile: %v", record.PublicExport())
 			}
@@ -212,40 +242,24 @@ func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
 				t.Fatal("token leaked to URL")
 			}
 			// Use the issued token against the actual PocketBase CRUD API.
-			r := f.request("GET", f.studio.URL+"/api/collections/"+collectionName+"/records/"+record.Id, "", "", token)
+			r := f.request("GET", f.api.URL+"/api/collections/"+collectionName+"/records/"+record.Id, "", "", token)
 			f.expect(r, 200)
-			home := f.request("GET", f.studio.URL+"/studio", "", "", "")
-			f.expect(home, 200)
-			if home.headers.Get("Cache-Control") != "no-store, no-transform" || !strings.Contains(home.body, mockshop.Email) {
-				t.Fatal("profile page must preserve the email and prohibit intermediary transformations")
-			}
-			for _, c := range callback.cookies {
-				if c.Name == f.s.cookieName("session") && (!c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != int(record.Collection().AuthToken.DurationTime().Seconds())) {
-					t.Fatal("incorrect session cookie flags")
-				}
-			}
 		})
 	}
 }
 
-func TestAnonymousVisitorSeesShopifyLoginLink(t *testing.T) {
+func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 	f := setup(t, "", "")
-	cb := f.authorize("/studio")
+	cb := f.authorize(true)
 	if !strings.Contains(cb, "error=login_required") {
 		t.Fatal(cb)
 	}
-	r := f.request("GET", cb, "", "", "")
-	f.expect(r, 303)
-	if r.location != "/studio?checked=1" {
-		t.Fatal(r.location)
+	r := f.callback(cb)
+	f.expect(r, 200)
+	if strings.TrimSpace(r.body) != `{"error":"login_required"}` || r.location != "" {
+		t.Fatal("silent failure must return JSON, not select a page for the application")
 	}
-	page := f.request("GET", f.studio.URL+r.location, "", "", "")
-	f.expect(page, 200)
-	if !strings.Contains(page.body, `href="/studio/auth"`) {
-		t.Fatal("missing Shopify login link")
-	}
-	interactive := f.request("GET", f.studio.URL+"/studio/auth", "", "", "")
-	f.expect(interactive, 302)
+	interactive := f.start(false)
 	u, _ := url.Parse(interactive.location)
 	if u.Query().Get("prompt") != "" {
 		t.Fatal("interactive login must not use prompt=none")
@@ -256,28 +270,28 @@ func TestAnonymousVisitorSeesShopifyLoginLink(t *testing.T) {
 	auth := f.request("GET", interactive.location, "", "", "")
 	f.expect(auth, 302)
 	f.expect(f.completeCallback(auth.location), 200)
-	f.session()
+	f.authRecord()
 }
 
 func TestCallbackRequiresStateAndBrowserBinding(t *testing.T) {
 	f := setup(t, "", "")
-	f.expect(f.request("GET", f.studio.URL+"/studio/callback?state=forged&code=fake", "", "", ""), 400)
+	f.expect(f.callback(f.api.URL+"/oauth/callback?state=forged&code=fake"), 400)
 	f.loginShop()
-	cb := f.authorize("/studio")
+	cb := f.authorize(true)
 	u, _ := url.Parse(cb)
 	q := u.Query()
 	q.Set("state", "wrong")
 	u.RawQuery = q.Encode()
-	f.expect(f.request("GET", u.String(), "", "", ""), 400)
+	f.expect(f.callback(u.String()), 400)
 	// A second browser cannot redeem another browser's callback.
 	jar, _ := cookiejar.New(nil)
 	original := f.client.Jar
 	f.client.Jar = jar
-	f.expect(f.request("GET", cb, "", "", ""), 400)
+	f.expect(f.callback(cb), 400)
 	f.client.Jar = original
 	f.expect(f.completeCallback(cb), 200)
 	// Replaying a previously consumed callback must fail.
-	f.expect(f.request("GET", cb, "", "", ""), 400)
+	f.expect(f.callback(cb), 400)
 }
 
 func TestInvalidIdentityTokensRejected(t *testing.T) {
@@ -285,9 +299,8 @@ func TestInvalidIdentityTokensRejected(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", fault)
 			f.loginShop()
-			cb := f.authorize("/studio")
+			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
-			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 		})
 	}
 }
@@ -299,8 +312,8 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
 			f := setup(t, "", tc.fault)
-			f.loginStudio()
-			_, record := f.session()
+			f.login()
+			_, record := f.authRecord()
 			if privateAccount(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
 				t.Fatal("numeric subject or profile was not preserved exactly")
 			}
@@ -313,9 +326,8 @@ func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", "numeric:"+fault)
 			f.loginShop()
-			cb := f.authorize("/studio")
+			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
-			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 		})
 	}
 }
@@ -379,13 +391,12 @@ func TestRealVerifierErrorsReceiveSafeDiagnostics(t *testing.T) {
 		t.Run(tc.fault, func(t *testing.T) {
 			f := setup(t, "", tc.fault)
 			f.loginShop()
-			cb := f.authorize("/studio")
+			cb := f.authorize(true)
 			r := f.completeCallback(cb)
 			f.expect(r, 401)
 			if !strings.Contains(r.body, "("+tc.reason+")") {
 				t.Fatalf("missing safe diagnostic: %s", r.body)
 			}
-			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 		})
 	}
 }
@@ -441,9 +452,8 @@ func TestIDTokenClaimTypeDiagnosticsNeverReturnValues(t *testing.T) {
 func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
 	f := setup(t, "", "graphql")
 	f.loginShop()
-	cb := f.authorize("/studio")
+	cb := f.authorize(true)
 	f.expect(f.completeCallback(cb), 502)
-	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
 func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
@@ -452,8 +462,8 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 	if c.Fields.GetByName("first_name") != nil || c.Fields.GetByName("last_name") != nil {
 		t.Fatal("Shopify integration added unwanted name fields")
 	}
-	f.loginStudio()
-	_, before := f.session()
+	f.login()
+	_, before := f.authRecord()
 	// A host project may still define its own names. They are not Shopify data
 	// and must survive setup and subsequent Shopify logins unchanged.
 	c.Fields.Add(&core.TextField{Name: "first_name"}, &core.TextField{Name: "last_name"})
@@ -469,8 +479,8 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 	if err := ensureCollection(f.app); err != nil {
 		t.Fatal(err)
 	}
-	f.loginStudio()
-	_, after := f.session()
+	f.login()
+	_, after := f.authRecord()
 	if after.Id != before.Id || after.GetString("first_name") != "LocalFirst" || after.GetString("last_name") != "LocalLast" {
 		t.Fatal("Shopify changed the host project's own profile fields")
 	}
@@ -478,17 +488,17 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 
 func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f := setup(t, "", "")
-	f.loginStudio()
-	_, r := f.session()
+	f.login()
+	_, r := f.authRecord()
 	account := privateAccount(f, r.Id)
 	f.mock.ProfileEmail = "new@example.test"
-	f.loginStudio()
-	_, updated := f.session()
+	f.login()
+	_, updated := f.authRecord()
 	if updated.Id != r.Id || updated.Email() != "new@example.test" {
 		t.Fatal("email change created a new identity")
 	}
 	f.mock.Subject = "different-shopify-subject"
-	f.expect(f.completeCallback(f.authorize("/studio/auth")), 409)
+	f.expect(f.completeCallback(f.authorize(false)), 409)
 	unchanged, err := f.app.FindRecordById(collectionName, r.Id)
 	if err != nil || unchanged.Email() != updated.Email() || privateAccount(f, r.Id).GetString("subject") != account.GetString("subject") {
 		t.Fatal("existing account changed")
@@ -497,8 +507,8 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 
 func TestEmailVerificationRequiresMatchingClaim(t *testing.T) {
 	f := setup(t, "", "email")
-	f.loginStudio()
-	_, r := f.session()
+	f.login()
+	_, r := f.authRecord()
 	if r.Verified() {
 		t.Fatal("must not mark a mismatching email as verified")
 	}
@@ -506,12 +516,9 @@ func TestEmailVerificationRequiresMatchingClaim(t *testing.T) {
 
 func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 	f := setup(t, "", "")
-	f.loginStudio()
-	token, r := f.session()
-	// Shopify identity is server-managed, even though regular signup is allowed.
-	f.expect(f.request("PATCH", f.studio.URL+"/api/collections/"+collectionName+"/records/"+r.Id, "", `{"shopify_sub":"attacker"}`, token), 403)
-	f.expect(f.request("POST", f.studio.URL+"/api/collections/"+collectionName+"/records", "", `{"email":"attacker@example.test","password":"longpassword123","passwordConfirm":"longpassword123","shopify_sub":"preclaimed"}`, ""), 403)
-	refresh := f.request("POST", f.studio.URL+"/api/collections/"+collectionName+"/auth-refresh", "", "", token)
+	f.login()
+	token, r := f.authRecord()
+	refresh := f.request("POST", f.api.URL+"/api/collections/"+collectionName+"/auth-refresh", "", "", token)
 	f.expect(refresh, 200)
 	var refreshed struct {
 		Token string `json:"token"`
@@ -525,32 +532,50 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, _ := url.Parse(f.studio.URL)
-	f.client.Jar.SetCookies(u, []*http.Cookie{{Name: f.s.cookieName("session"), Value: expired, Path: "/"}})
-	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
+	f.expect(f.request("GET", f.api.URL+"/native/whoami", "", "", expired), 401)
 }
 
-func TestCrossOriginAndLogout(t *testing.T) {
+func TestOriginsAreCheckedBeforeCompletingTheFlow(t *testing.T) {
 	f := setup(t, "", "")
-	f.loginStudio()
-	f.expect(f.request("POST", f.studio.URL+"/studio/session", "https://evil.example", "", ""), 403)
-	f.expect(f.request("POST", f.studio.URL+"/studio/logout", "https://evil.example", "", ""), 403)
-	f.session()
-	f.expect(f.request("POST", f.studio.URL+"/studio/logout", f.studio.URL, "", ""), 303)
-	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
+	for _, origin := range []string{"", "https://evil.example"} {
+		f.expect(f.request("POST", f.api.URL+"/api/shopify/auth/start", origin, `{}`, ""), 403)
+	}
+	f.loginShop()
+	cb := f.authorize(false)
+	u, _ := url.Parse(cb)
+	body := string(mustJSON(t, map[string]string{"state": u.Query().Get("state"), "code": u.Query().Get("code")}))
+	for _, origin := range []string{"", "https://evil.example"} {
+		f.expect(f.request("POST", f.api.URL+"/api/shopify/auth/complete", origin, body, ""), 403)
+	}
+	f.expect(f.completeCallback(cb), 200)
+}
+
+func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
+	f := setup(t, "", "")
+	for _, path := range []string{"/studio", "/studio/auth", "/studio/callback", "/studio/client.js", "/studio/callback.js", "/studio/pocketbase.es.mjs"} {
+		f.expect(f.request("GET", f.api.URL+path, "", "", ""), 404)
+	}
+	for _, path := range []string{"/studio/session", "/studio/logout"} {
+		f.expect(f.request("POST", f.api.URL+path, f.api.URL, "", ""), 404)
+	}
+	f.login()
+	u, _ := url.Parse(f.api.URL)
+	f.client.Jar.SetCookies(u, []*http.Cookie{{Name: "studio_session", Value: f.auth.Token, Path: "/"}})
+	f.expect(f.request("GET", f.api.URL+"/native/whoami", "", "", ""), 401)
+	f.expect(f.request("GET", f.api.URL+"/native/whoami", "", "", f.auth.Token), 200)
 }
 
 func TestExpiredLoginTransaction(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginShop()
-	cb := f.authorize("/studio")
+	cb := f.authorize(true)
 	f.s.mu.Lock()
 	for k, p := range f.s.pending {
 		p.Expires = time.Now().Add(-time.Minute)
 		f.s.pending[k] = p
 	}
 	f.s.mu.Unlock()
-	f.expect(f.request("GET", cb, "", "", ""), 400)
+	f.expect(f.callback(cb), 400)
 }
 
 func TestProductionURLAndCookieRequirements(t *testing.T) {
@@ -565,13 +590,13 @@ func TestProductionURLAndCookieRequirements(t *testing.T) {
 	if checkURL("http://127.0.0.1:8090", true, true) != nil {
 		t.Fatal("local mock should be allowed")
 	}
-	s := &Service{cfg: Config{StudioURL: "https://studio.example"}}
+	s := &Service{origin: "https://app.example"}
 	rr := httptest.NewRecorder()
 	e := &core.RequestEvent{}
 	e.Response = rr
-	s.setCookie(e, "session", "test", 900)
+	s.setFlowCookie(e, "test", 300)
 	c := rr.Result().Cookies()[0]
-	if c.Name != "__Host-studio_session" || !c.Secure || !c.HttpOnly || c.Domain != "" || c.Path != "/" {
+	if c.Name != "__Host-shopify_oauth" || !c.Secure || !c.HttpOnly || c.Domain != "" || c.Path != "/" || c.MaxAge != 300 {
 		t.Fatal("missing production cookie protections")
 	}
 }
@@ -579,8 +604,7 @@ func TestProductionURLAndCookieRequirements(t *testing.T) {
 func TestPKCETamperingRejected(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginShop()
-	start := f.request("GET", f.studio.URL+"/studio", "", "", "")
-	f.expect(start, 302)
+	start := f.start(true)
 	u, _ := url.Parse(start.location)
 	q := u.Query()
 	q.Set("code_challenge", "attacker-challenge")

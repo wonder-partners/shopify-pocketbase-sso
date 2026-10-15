@@ -8,7 +8,6 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"studio-sso/internal/studio"
-	_ "studio-sso/migrations"
 )
 
 func main() {
@@ -17,7 +16,7 @@ func main() {
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		cfg := studio.Config{
 			ShopURL:           os.Getenv("SHOPIFY_SHOP_URL"),
-			StudioURL:         os.Getenv("STUDIO_URL"),
+			RedirectURL:       os.Getenv("SHOPIFY_REDIRECT_URL"),
 			ClientID:          os.Getenv("SHOPIFY_CUSTOMER_CLIENT_ID"),
 			ClientSecret:      os.Getenv("SHOPIFY_CUSTOMER_CLIENT_SECRET"),
 			AllowLoopbackHTTP: os.Getenv("SSO_ALLOW_LOOPBACK_HTTP") == "1",

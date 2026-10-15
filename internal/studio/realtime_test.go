@@ -15,8 +15,8 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			f := setup(t, "", "")
 			documentsCollection(f)
-			f.loginStudio()
-			shopToken, shop := f.session()
+			f.login()
+			shopToken, shop := f.authRecord()
 			native := nativeSignup(f, "realtime-native@example.test")
 			nativeID := native.Record["id"].(string)
 			token, own, otherToken, other := shopToken, shop.Id, native.Token, nativeID
@@ -27,7 +27,7 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			otherDoc := createDocument(f, otherToken, other)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			req, _ := http.NewRequestWithContext(ctx, "GET", f.studio.URL+"/api/realtime", nil)
+			req, _ := http.NewRequestWithContext(ctx, "GET", f.api.URL+"/api/realtime", nil)
 			res, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatal(err)
@@ -59,18 +59,18 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			}
 			account := privateAccount(f, shop.Id)
 			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyIdentities/*","_shopifyIdentities/` + account.Id + `"]}`
-			f.expect(f.request("POST", f.studio.URL+"/api/realtime", "", body, token), 204)
+			f.expect(f.request("POST", f.api.URL+"/api/realtime", "", body, token), 204)
 			account.Set("customerId", "gid://shopify/Customer/67890")
 			if err := f.app.Save(account); err != nil {
 				t.Fatal(err)
 			}
-			f.expect(f.request("PATCH", f.studio.URL+"/api/collections/documents/records/"+otherDoc, "", `{"title":"Other user update"}`, otherToken), 200)
+			f.expect(f.request("PATCH", f.api.URL+"/api/collections/documents/records/"+otherDoc, "", `{"title":"Other user update"}`, otherToken), 200)
 			select {
 			case <-events:
 				t.Fatal("realtime leaked a private Shopify identity or another user's record")
 			case <-time.After(100 * time.Millisecond):
 			}
-			f.expect(f.request("PATCH", f.studio.URL+"/api/collections/documents/records/"+ownDoc, "", `{"title":"Own update"}`, token), 200)
+			f.expect(f.request("PATCH", f.api.URL+"/api/collections/documents/records/"+ownDoc, "", `{"title":"Own update"}`, token), 200)
 			select {
 			case data := <-events:
 				var event struct {

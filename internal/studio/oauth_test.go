@@ -37,7 +37,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.loginShop()
-	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)
 	if data["collection"] != "users" {
@@ -45,10 +45,10 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	}
 	body := nativeOAuthBody(t, data)
 	for _, target := range []string{members.Name, members.Id, superusers.Name, superusers.Id} {
-		f.expect(f.request("POST", f.studio.URL+"/api/collections/"+target+"/auth-with-oauth2", f.studio.URL, body, ""), 403)
+		f.expect(f.request("POST", f.api.URL+"/api/collections/"+target+"/auth-with-oauth2", f.api.URL, body, ""), 403)
 	}
 	users, _ := f.app.FindCollectionByNameOrId("users")
-	result := f.request("POST", f.studio.URL+"/api/collections/"+users.Id+"/auth-with-oauth2", f.studio.URL, body, "")
+	result := f.request("POST", f.api.URL+"/api/collections/"+users.Id+"/auth-with-oauth2", f.api.URL, body, "")
 	f.expect(result, 200)
 	userID := decodeAuth(t, result).Record["id"].(string)
 	a := privateAccount(f, userID)
@@ -56,16 +56,6 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	if relation.CollectionId != users.Id {
 		t.Fatal("private Shopify identity is not linked to users")
 	}
-	other := core.NewRecord(members)
-	other.SetEmail("other-collection@example.test")
-	other.SetPassword("TestPassword12345")
-	if err := f.app.Save(other); err != nil {
-		t.Fatal(err)
-	}
-	otherToken, _ := other.NewAuthToken()
-	u, _ := url.Parse(f.studio.URL)
-	f.client.Jar.SetCookies(u, []*http.Cookie{{Name: f.s.cookieName("session"), Value: otherToken, Path: "/"}})
-	f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 }
 
 func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
@@ -86,8 +76,8 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 		}
 		return e.Next()
 	})
-	first := decodeAuth(t, f.loginStudio())
-	_, user := f.session()
+	first := decodeAuth(t, f.login())
+	_, user := f.authRecord()
 	if oauthCalls != 1 || createCalls != 1 || first.Meta["isNew"] != true {
 		t.Fatal("native OAuth signup or creation hook was bypassed")
 	}
@@ -100,7 +90,7 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	if first.Meta["accessToken"] != "" || first.Meta["refreshToken"] != "" || strings.Contains(string(mustJSON(t, first.Meta)), "id_token") {
 		t.Fatal("upstream credentials leaked in auth meta")
 	}
-	second := decodeAuth(t, f.loginStudio())
+	second := decodeAuth(t, f.login())
 	if second.Record["id"] != user.Id || second.Meta["isNew"] != false || oauthCalls != 2 || createCalls != 1 {
 		t.Fatal("repeat OAuth login duplicated or recreated the user")
 	}
@@ -143,12 +133,11 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 				})
 			}
 			f.loginShop()
-			r := f.completeCallback(f.authorize("/studio/auth"))
+			r := f.completeCallback(f.authorize(false))
 			f.expect(r, 403)
 			if strings.Contains(r.body, `"token"`) {
 				t.Fatal("denied OAuth exposed a JWT")
 			}
-			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
 			if strings.HasPrefix(stage, "create") {
 				count, _ := f.app.CountRecords("users")
 				if count != 0 {
@@ -162,34 +151,34 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 func TestNativeOAuthCodeIsBrowserBoundSingleUseAndOriginProtected(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginShop()
-	cb := f.authorize("/studio/auth")
+	cb := f.authorize(false)
 	u, _ := url.Parse(cb)
 	f.s.mu.Lock()
 	pending := f.s.pending[u.Query().Get("state")]
 	f.s.mu.Unlock()
 	data := map[string]string{"provider": providerName, "code": u.Query().Get("code"), "codeVerifier": pending.Verifier, "redirectURL": f.s.oauth.RedirectURL}
 	body := nativeOAuthBody(t, data)
-	endpoint := f.studio.URL + "/api/collections/users/auth-with-oauth2"
+	endpoint := f.api.URL + "/api/collections/users/auth-with-oauth2"
 	// Even a real code and verifier cannot bypass the state-checked callback.
-	f.expect(f.request("POST", endpoint, f.studio.URL, body, ""), 400)
-	page := f.request("GET", cb, "", "", "")
+	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
+	page := f.callback(cb)
 	f.expect(page, 200)
-	if page.headers.Get("Cache-Control") != "no-store, no-transform" || !strings.Contains(page.body, "/studio/callback.js") {
-		t.Fatal("unsafe callback document")
+	if page.headers.Get("Cache-Control") != "no-store" || !strings.HasPrefix(page.headers.Get("Content-Type"), "application/json") || strings.Contains(page.body, `"token"`) {
+		t.Fatal("completion must return private JSON parameters, never HTML or an auth token")
 	}
 	f.expect(f.request("POST", endpoint, "https://evil.example", body, ""), 403)
 	jar := f.client.Jar
 	f.client.Jar, _ = cookiejar.New(nil)
-	f.expect(f.request("POST", endpoint, f.studio.URL, body, ""), 400)
-	u2, _ := url.Parse(f.studio.URL)
-	f.client.Jar.SetCookies(u2, []*http.Cookie{{Name: f.s.cookieName("flow"), Value: "another-browser", Path: "/"}})
-	f.expect(f.request("POST", endpoint, f.studio.URL, body, ""), 400)
+	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
+	u2, _ := url.Parse(f.api.URL)
+	f.client.Jar.SetCookies(u2, []*http.Cookie{{Name: f.s.flowCookieName(), Value: "another-browser", Path: "/"}})
+	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
 	f.client.Jar = jar
 	data["redirectURL"] = "https://evil.example/callback"
-	f.expect(f.request("POST", endpoint, f.studio.URL, nativeOAuthBody(t, data), ""), 400)
+	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 400)
 	data["redirectURL"] = f.s.oauth.RedirectURL
-	f.expect(f.request("POST", endpoint, f.studio.URL, nativeOAuthBody(t, data), ""), 200)
-	f.expect(f.request("POST", endpoint, f.studio.URL, body, ""), 400)
+	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 200)
+	f.expect(f.request("POST", endpoint, f.api.URL, body, ""), 400)
 }
 
 func TestNativeOAuthRejectsExpiredCompletionAndWrongVerifier(t *testing.T) {
@@ -197,7 +186,7 @@ func TestNativeOAuthRejectsExpiredCompletionAndWrongVerifier(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "", "")
 			f.loginShop()
-			page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+			page := f.callback(f.authorize(false))
 			f.expect(page, 200)
 			data := callbackData(t, page.body)
 			status := 502
@@ -211,8 +200,7 @@ func TestNativeOAuthRejectsExpiredCompletionAndWrongVerifier(t *testing.T) {
 			} else {
 				data["codeVerifier"] = "wrong-verifier"
 			}
-			f.expect(f.request("POST", f.studio.URL+"/api/collections/users/auth-with-oauth2", f.studio.URL, nativeOAuthBody(t, data), ""), status)
-			f.expect(f.request("POST", f.studio.URL+"/studio/session", f.studio.URL, "", ""), 401)
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), status)
 		})
 	}
 }
@@ -221,26 +209,26 @@ func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 	f := setup(t, "", "")
 	native := nativeSignup(f, "unrelated@example.test")
 	f.loginShop()
-	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	page := f.callback(f.authorize(false))
 	data := callbackData(t, page.body)
-	f.expect(f.request("POST", f.studio.URL+"/api/collections/users/auth-with-oauth2", f.studio.URL, nativeOAuthBody(t, data), native.Token), 409)
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), native.Token), 409)
 	count, _ := f.app.CountRecords(core.CollectionNameExternalAuths)
 	if count != 0 {
 		t.Fatal("OAuth linked to an unrelated authenticated account")
 	}
 }
 
-func TestNativeOAuthPreservesPrototypeAccountAndRelations(t *testing.T) {
+func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
 	f := setup(t, "", "")
 	documentsCollection(f)
-	c := addLegacyIdentitySchema(f)
+	c, _ := f.app.FindCollectionByNameOrId("users")
 	legacy := core.NewRecord(c)
 	legacy.SetEmail("camille@example.test")
 	legacy.SetPassword("TestPassword12345")
-	legacy.Set("shopify_issuer", f.s.issuer)
-	legacy.Set("shopify_sub", "shopify-customer-sub-12345")
-	legacy.Set("shopify_customer_id", "gid://shopify/Customer/12345")
 	if err := f.app.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := putAccount(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345"); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := legacy.NewAuthToken()
@@ -248,11 +236,11 @@ func TestNativeOAuthPreservesPrototypeAccountAndRelations(t *testing.T) {
 	if err := ensureCollection(f.app); err != nil {
 		t.Fatal(err)
 	}
-	result := decodeAuth(t, f.loginStudio())
+	result := decodeAuth(t, f.login())
 	if result.Record["id"] != legacy.Id || result.Meta["isNew"] != false {
 		t.Fatal("prototype identity was not preserved")
 	}
-	f.expect(f.request("GET", f.studio.URL+"/api/collections/documents/records/"+doc, "", "", result.Token), 200)
+	f.expect(f.request("GET", f.api.URL+"/api/collections/documents/records/"+doc, "", "", result.Token), 200)
 	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": legacy.Id})
 	if err != nil || link.ProviderId() == "" {
 		t.Fatal("native link was not created for the prototype user")
@@ -302,7 +290,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T) {
 	f := setup(t, "", "email") // The verified claim does not match the profile email.
 	f.loginShop()
-	page := f.request("GET", f.authorize("/studio/auth"), "", "", "")
+	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)
 	delete(data, "collection")
@@ -314,16 +302,16 @@ func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T
 		"email": "forged@example.test", "verified": true, "shopify_sub": "forged-subject",
 		"password": "ChosenPassword12345", "passwordConfirm": "ChosenPassword12345",
 	}
-	r := f.request("POST", f.studio.URL+"/api/collections/users/auth-with-oauth2", f.studio.URL, string(mustJSON(t, body)), "")
+	r := f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, string(mustJSON(t, body)), "")
 	f.expect(r, 200)
 	result := decodeAuth(t, r)
 	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateAccount(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
 		t.Fatal("client-controlled createData overrode the verified provider profile")
 	}
-	for _, field := range legacyIdentityFields {
+	for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {
 		if _, exists := result.Record[field]; exists {
 			t.Fatal("legacy identity field leaked in the native OAuth response")
 		}
 	}
-	f.expect(f.request("POST", f.studio.URL+"/api/collections/users/auth-with-password", "", `{"identity":"camille@example.test","password":"ChosenPassword12345"}`, ""), 400)
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-password", "", `{"identity":"camille@example.test","password":"ChosenPassword12345"}`, ""), 400)
 }

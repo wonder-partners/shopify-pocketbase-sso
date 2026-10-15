@@ -57,7 +57,7 @@ func identityID(issuer, subject string) string {
 func (p *shopifyProvider) FetchToken(code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
 	flow, ok := p.Context().Value(providerContextKey{}).(providerContext)
 	if !ok || flow.service == nil || flow.browser == "" {
-		return nil, errors.New("start the Shopify login from the studio")
+		return nil, errors.New("start the Shopify OAuth flow before exchanging its code")
 	}
 	s := flow.service
 	if p.RedirectURL() != s.oauth.RedirectURL || p.ClientId() != s.cfg.ClientID {
@@ -137,10 +137,10 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 		return e.Next()
 	}
 	noStore(e)
-	if e.Request.Header.Get("Origin") != s.cfg.StudioURL {
-		return e.ForbiddenError("Invalid origin.", nil)
+	if err := s.requireOrigin(e); err != nil {
+		return err
 	}
-	cookie, err := e.Request.Cookie(s.cookieName("flow"))
+	cookie, err := e.Request.Cookie(s.flowCookieName())
 	if err != nil {
 		return e.BadRequestError("Missing login cookie.", nil)
 	}
@@ -153,11 +153,9 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 		return e.ForbiddenError("Shopify is not configured for this auth collection.", nil)
 	}
 	e.Request = e.Request.WithContext(context.WithValue(e.Request.Context(), providerContextKey{}, providerContext{s, cookie.Value}))
-	return s.captureAuthResponse(e, c, func() error {
+	return captureAuthResponse(e, func() error {
 		err := e.Next()
-		// The code was consumed by the provider. Remove the temporary flow cookie.
-		// A failed login must never produce a session cookie, handled by the buffer.
-		s.setCookie(e, "flow", "", -1)
+		s.setFlowCookie(e, "", -1)
 		return err
 	})
 }

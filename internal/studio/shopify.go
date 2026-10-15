@@ -19,7 +19,7 @@ import (
 
 type Config struct {
 	ShopURL           string
-	StudioURL         string
+	RedirectURL       string // Callback page owned by the frontend, on the API origin.
 	ClientID          string
 	ClientSecret      string // Optional: leave empty for a public client with PKCE.
 	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
@@ -70,7 +70,7 @@ func (t shopTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
 	r.Header = req.Header.Clone()
 	r.Header.Set("Origin", t.origin)
-	r.Header.Set("User-Agent", "studio-pocketbase-sso/0.1")
+	r.Header.Set("User-Agent", "pocketbase-shopify")
 	return http.DefaultTransport.RoundTrip(r)
 }
 
@@ -114,7 +114,7 @@ func (s *Service) discover(ctx context.Context) error {
 	}
 	s.oauth = oauth2.Config{
 		ClientID: s.cfg.ClientID, ClientSecret: s.cfg.ClientSecret,
-		RedirectURL: s.cfg.StudioURL + "/studio/callback",
+		RedirectURL: s.cfg.RedirectURL,
 		Scopes:      []string{"openid", "email", "customer-account-api:full"},
 		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: style},
 	}
