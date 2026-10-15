@@ -11,13 +11,13 @@ Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucu
 - Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère l'identifiant client et l'e-mail.
 - PocketBase crée ou retrouve le compte `users`, conserve la liaison dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
 
-Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. L'intégration ne fournit aucune page HTML, aucun SDK embarqué et aucune API de session parallèle.
+Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. Le module Go d'authentification ne fournit aucune page HTML, aucun SDK embarqué et aucune API de session parallèle. L'application hôte possède désormais un frontend de test séparé dans `pb_public`.
 
 Le state est désormais vérifié par le frontend, pas par le backend. La possession du verifier PKCE protège l'échange du code. Les codes à usage unique et leur expiration sont contrôlés par Shopify. Le délai de cinq minutes dans l'exemple est un contrôle local supplémentaire, pas une expiration imposée par notre serveur.
 
 ## Configuration et hôte Go
 
-`main.go` reste un hôte PocketBase minimal. Il initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives.
+`main.go` initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives. L'hôte appelle séparément `registerPublicFrontend`, défini dans `frontend.go`, pour servir le frontend de test.
 
 | Paramètre Go | Variable d'environnement | Rôle |
 | --- | --- | --- |
@@ -34,6 +34,18 @@ L'application hôte choisit et sert sa page de callback. Aucun chemin n'est impo
 La collection d'auth est fixée à `users` et doit exister. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens.
 
 `_shopifyIdentities` est une collection système avec les champs `user`, `issuer`, `subject` et `customerId`. Ses cinq règles API sont verrouillées. Les identifiants bruts sont réservés au serveur et aux superusers. Les prénoms et noms ne sont ni demandés ni synchronisés.
+
+## Frontend de test dans pb_public
+
+Ouvrir `http://127.0.0.1:8090/` après lancement de l'hôte. `pb_public/index.html` et `app.js` proposent une connexion interactive, un test SSO avec `prompt=none`, l'état de l'auth store, une vérification API et une déconnexion locale. Aucun parcours silencieux ne démarre automatiquement à l'ouverture de cette page de test.
+
+`frontend.go` appartient à l'application hôte, pas au module d'authentification. Il enregistre le handler PocketBase natif `apis.Static` avec fallback vers `index.html`, permettant de servir `/auth/callback`. Il ajoute les en-têtes `no-store`, `no-referrer`, `nosniff` et une CSP limitée aux ressources locales. Les chemins API inconnus ne sont pas remplacés par du HTML. Aucun endpoint de connexion ni cookie n'est ajouté.
+
+Le SDK officiel 0.28.1 est copié depuis `integration/node_modules/pocketbase/dist/pocketbase.es.mjs` vers `pb_public/vendor/pocketbase.es.mjs`, avec sa licence MIT dans `LICENSE.pocketbase.md`. Le callback ne charge aucun script tiers. Les identifiants et tokens ne sont ni codés en dur ni affichés ; seuls l'e-mail, l'identifiant PocketBase et le résultat des contrôles apparaissent.
+
+Le bouton de vérification effectue un `authRefresh()` natif puis une lecture du propre compte. Il ne contourne pas les règles de `users` : une règle de lecture restrictive peut refuser cette deuxième opération. La page annonce explicitement une MFA si le backend en demande une, sans implémenter son écran.
+
+L'accès local sert à vérifier la page. Avant le test réel, il faut une URL HTTPS publique et aligner son callback `/auth/callback` dans Shopify, dans `SHOPIFY_REDIRECT_URL` et dans le frontend. La configuration Shopify active n'est pas modifiée par la création de `pb_public`.
 
 ## Exemple frontend minimal
 
@@ -104,7 +116,7 @@ Utilisation :
 
 Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics ni ressources tierces. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
 
-Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. Il n'est pas servi par le backend.
+Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. Le frontend `pb_public/app.js` reprend exactement ces fonctions ; un test vérifie qu'elles ne divergent pas.
 
 ## Sécurité et limites
 

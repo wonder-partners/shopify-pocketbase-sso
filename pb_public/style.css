@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; padding: 2rem 1rem; line-height: 1.5; }
+main { max-width: 44rem; margin: auto; }
+h1 { margin-bottom: .25rem; }
+h2 { font-size: 1.15rem; }
+section { border-block: 1px solid #8886; margin-block: 1.5rem; padding-block: 1rem; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .5rem 1rem; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+button { font: inherit; padding: .6rem .9rem; cursor: pointer; }
+button:disabled { cursor: default; }
+.note { font-size: .9rem; opacity: .8; overflow-wrap: anywhere; }
+#status[data-error="true"] { color: #d34949; }
+@media (max-width: 30rem) { dl { grid-template-columns: 1fr; } dd { margin-bottom: .5rem; } }

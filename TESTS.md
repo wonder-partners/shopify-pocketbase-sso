@@ -13,7 +13,13 @@ node --check integration/sdk.mjs
 git diff --check
 ```
 
-Résultat du 15 octobre 2026 : succès des 49 groupes de tests du cœur, dont les deux intégrations SDK. Couverture du cœur : 86,8 %. Les cinq groupes des migrations historiques passent aussi, avec une couverture de 81,0 %. `go vet`, la compilation et les vérifications JavaScript passent.
+Résultat du 16 octobre 2026 : succès des 49 groupes de tests du cœur, dont les deux intégrations SDK. Couverture du cœur : 86,8 %. Les deux groupes de l'hôte et les cinq groupes des migrations historiques passent aussi. `go vet`, la compilation et les vérifications JavaScript passent.
+
+## Frontend statique de l'hôte
+
+`frontend_test.go` vérifie la page racine, le callback `/auth/callback`, les scripts et le SDK local servis par `apis.Static`. Les en-têtes de sécurité et l'absence de cookies sont contrôlés, les paramètres du callback ne sont pas reflétés dans le HTML et les routes natives PocketBase restent prioritaires. Un deuxième test vérifie que les fonctions OAuth de `pb_public/app.js` sont identiques à celles du README déjà exécutées avec le SDK officiel.
+
+Un contrôle Node a aussi exécuté le véritable `app.js` avec le SDK officiel local, un DOM simulé et des réponses HTTP de test. Il couvre les boutons, le callback invalide, `login_required`, la mise à jour de l'auth store, le refresh, la lecture du compte, la déconnexion locale et un mauvais chemin de callback. Cela ne remplace pas un navigateur réel.
 
 ## Nouveau contrat testé
 
@@ -69,7 +75,7 @@ Node reçoit une simulation du contrat Web Storage et de la navigation. Ce n'est
 
 ## Backend local et données existantes
 
-Le nouveau binaire `bin/pocketbase-native-redirect.exe` a remplacé le backend local sur `127.0.0.1:8090`. Les contrôles HTTP confirment :
+Le binaire `bin/pocketbase-browser-test.exe` sert désormais le backend et `pb_public` en local sur `127.0.0.1:8090`. Les contrôles HTTP confirment :
 
 - Santé de l'API et disponibilité de `users/auth-methods`.
 - Nonce et challenge S256 cohérents, paramètres natifs présents, réponse `no-store`, aucun cookie créé.
@@ -77,6 +83,8 @@ Le nouveau binaire `bin/pocketbase-native-redirect.exe` a remplacé le backend l
 
 La sauvegarde SQLite `pb_backups/before-native-redirect-20261015.db` précède le redémarrage. Une comparaison intégrale après redémarrage confirme que les lignes de `users`, `_shopifyIdentities` et `_externalAuths` sont inchangées. `PRAGMA quick_check` retourne `ok`.
 
-L'app Shopify, sa configuration et le callback enregistré n'ont pas été modifiés. Le tunnel de l'ancienne démonstration reste arrêté ; aucun frontend de démo n'a été réintroduit. Le nouveau parcours n'a pas encore été retesté contre la vraie boutique depuis un frontend hôte.
+La sauvegarde supplémentaire `pb_backups/before-public-frontend-20261016.db` précède le redémarrage avec les fichiers publics. Les comptes et liaisons ont de nouveau été comparés intégralement et sont inchangés ; le contrôle SQLite est valide. L'asset SDK servi est identique à celui du paquet officiel local.
+
+L'app Shopify, sa configuration et le callback enregistré n'ont pas été modifiés. Le tunnel de l'ancienne démonstration reste arrêté. Le nouveau frontend de test n'est pas encore exposé en HTTPS et le parcours n'a pas été retesté contre la vraie boutique. La vérification visuelle par les outils de navigateur n'a pas été possible dans cet environnement ; les contrôles ci-dessus sont HTTP et automatisés.
 
 Les migrations historiques restent testées séparément et ne sont pas importées par `main.go` ou le cœur. Les validations antérieures contre Shopify restent dans [docs/prototype-tests.md](docs/prototype-tests.md).

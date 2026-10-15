@@ -26,6 +26,7 @@ func main() {
 			return err
 		}
 		s.Register(e.Router)
+		registerPublicFrontend(e.Router)
 		return e.Next()
 	})
 	if err := app.Start(); err != nil {

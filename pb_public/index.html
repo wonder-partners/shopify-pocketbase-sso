@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Test Shopify · PocketBase</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Connexion Shopify</h1>
+    <p>Test du parcours OAuth natif avec le SDK PocketBase officiel.</p>
+    <p id="status" role="status" aria-live="polite">Chargement…</p>
+    <div class="actions">
+      <button id="sso" disabled>Tester le SSO silencieux</button>
+      <button id="login" disabled>Se connecter avec Shopify</button>
+    </div>
+    <section aria-labelledby="session-title">
+      <h2 id="session-title">Session PocketBase</h2>
+      <dl>
+        <dt>Auth store valide</dt><dd id="authenticated">Non</dd>
+        <dt>E-mail</dt><dd id="email">—</dd>
+        <dt>Identifiant PocketBase</dt><dd id="user-id">—</dd>
+      </dl>
+      <p id="api-status" role="status">Accès API non vérifié.</p>
+      <div class="actions">
+        <button id="verify" disabled>Vérifier l’accès API</button>
+        <button id="logout" disabled>Se déconnecter du test</button>
+      </div>
+    </section>
+    <p class="note">Callback à configurer dans Shopify et dans le backend : <code id="callback"></code></p>
+    <p class="note">Le test réel nécessite une URL HTTPS publique. Aucun token n’est affiché. La déconnexion locale ne déconnecte pas Shopify.</p>
+  </main>
+</body>
+</html>
