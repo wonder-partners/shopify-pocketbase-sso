@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"embed"
 	"encoding/base64"
 	"errors"
 	"html/template"
@@ -47,6 +48,9 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if cfg.ClientID == "" {
 		return nil, errors.New("SHOPIFY_CUSTOMER_CLIENT_ID is required")
 	}
+	if cfg.AuthCollection == "" {
+		cfg.AuthCollection = collectionName
+	}
 	s := &Service{app: app, cfg: cfg, pending: map[string]pending{}, client: &http.Client{
 		Timeout: 10 * time.Second, Transport: shopTransport{origin: cfg.StudioURL},
 		// A redirect must not leak access tokens to another endpoint.
@@ -55,7 +59,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if err := s.discover(ctx); err != nil {
 		return nil, err
 	}
-	if err := ensureCollection(app); err != nil {
+	if err := ensureCollection(app, cfg.AuthCollection); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -70,6 +74,16 @@ func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
 	g.GET("/callback", s.callback)
 	g.POST("/session", s.session)
 	g.POST("/logout", s.logout)
+	for _, name := range []string{"client.js", "pocketbase.es.mjs"} {
+		g.GET("/"+name, func(e *core.RequestEvent) error {
+			body, err := browserAssets.ReadFile("web/" + name)
+			if err != nil {
+				return err
+			}
+			noStore(e)
+			return e.Blob(http.StatusOK, "text/javascript; charset=utf-8", body)
+		})
+	}
 }
 
 func random() string {
@@ -98,7 +112,7 @@ func noStore(e *core.RequestEvent) {
 	// Keep intermediaries from rewriting account HTML, e.g. email obfuscation.
 	e.Response.Header().Set("Cache-Control", "no-store, no-transform")
 	e.Response.Header().Set("Referrer-Policy", "no-referrer")
-	e.Response.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	e.Response.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 }
 
 func (s *Service) begin(e *core.RequestEvent, silent bool) error {
@@ -185,17 +199,21 @@ func (s *Service) callback(e *core.RequestEvent) error {
 	if err != nil {
 		return router.NewApiError(http.StatusBadGateway, "Unable to read the Shopify customer. Check Customer Account API permissions.", nil)
 	}
-	record, err := s.saveCustomer(id.Subject, c, cl)
+	info, err := e.RequestInfo()
 	if err != nil {
+		return err
+	}
+	record, err := s.saveCustomer(id.Subject, c, cl, info)
+	if err != nil {
+		if errors.Is(err, errSignupForbidden) {
+			return e.ForbiddenError("Shopify signup is not allowed by this collection.", nil)
+		}
 		return router.NewApiError(http.StatusConflict, "Unable to save the customer. Check server-side collection constraints.", nil)
 	}
-	// Non-refreshable PocketBase token. Shopify tokens are discarded after profile lookup.
-	pbToken, err := record.NewStaticAuthToken(sessionDuration)
-	if err != nil {
-		return e.InternalServerError("Unable to create the studio session.", nil)
-	}
-	s.setCookie(e, "session", pbToken, int(sessionDuration.Seconds()))
-	return e.Redirect(http.StatusSeeOther, "/studio")
+	// Use the same AuthRule, auth hooks, MFA, enrichment, login alerts and
+	// renewable token policy as PocketBase's built-in authentication methods.
+	e.Set(core.RequestEventKeyInfoContext, core.RequestInfoContextOAuth2)
+	return s.authResponse(e, record, core.MFAMethodOAuth2, true)
 }
 
 func (s *Service) current(e *core.RequestEvent) (*core.Record, string) {
@@ -204,9 +222,10 @@ func (s *Service) current(e *core.RequestEvent) (*core.Record, string) {
 		return nil, ""
 	}
 	r, err := s.app.FindAuthRecordByToken(c.Value, core.TokenTypeAuth)
-	if err != nil || r.Collection().Name != collectionName {
+	if err != nil || r.Collection().Name != s.cfg.AuthCollection {
 		return nil, ""
 	}
+	e.Auth = r
 	info, err := e.RequestInfo()
 	if err != nil {
 		return nil, ""
@@ -242,12 +261,13 @@ func (s *Service) session(e *core.RequestEvent) error {
 	if e.Request.Header.Get("Origin") != s.cfg.StudioURL {
 		return e.ForbiddenError("Invalid origin.", nil)
 	}
-	r, token := s.current(e)
+	r, _ := s.current(e)
 	if r == nil {
 		return e.UnauthorizedError("Sign in with Shopify.", nil)
 	}
-	r.IgnoreEmailVisibility(true)
-	return e.JSON(http.StatusOK, map[string]any{"token": token, "record": r})
+	// Bootstrap the SDK from an existing authenticated cookie. An empty method,
+	// like native auth-refresh, avoids counting this as a new MFA first factor.
+	return s.authResponse(e, r, "", false)
 }
 
 func (s *Service) logout(e *core.RequestEvent) error {
@@ -265,6 +285,10 @@ var page = template.Must(template.New("studio").Parse(`<!doctype html>
 <style>body{font:18px system-ui;max-width:680px;margin:12vh auto;padding:24px;line-height:1.6}a,button{color:#075e46}small{color:#555}button{font:inherit;padding:8px 16px}</style>
 <main><h1>Le studio</h1>{{if .Email}}
 <p>Connecté avec Shopify.</p><p>{{.Name}}<br>{{.Email}}</p><small>{{.CustomerID}}</small>
+<p id="api-status">Vérification de l'accès à l'API PocketBase…</p><script type="module" src="/studio/client.js"></script>
 <form method="post" action="/studio/logout"><p><button>Se déconnecter du studio</button></p></form>
 {{else}}<p>Connecte-toi avec ton compte de la boutique pour ouvrir le studio.</p>
 <p><a href="/studio/auth">Se connecter avec Shopify</a></p>{{end}}</main></html>`))
+
+//go:embed web/*
+var browserAssets embed.FS

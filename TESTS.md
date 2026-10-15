@@ -2,16 +2,20 @@
 
 Exécution le 15 octobre 2026, Windows amd64, Go 1.27.2 et PocketBase 0.40.5.
 
-Le prototype passe les tests locaux. L'app est installée sur une vraie dev store Basic non-Plus. Le parcours anonyme a été vérifié contre Shopify et l'utilisateur a ensuite confirmé son arrivée connecté dans le studio. Le serveur a récupéré le profil réel et créé le compte PocketBase associé.
+Le prototype passe les tests locaux. L'app est installée sur une vraie dev store Basic non-Plus. L'utilisateur a confirmé sa connexion Shopify, puis l'accès à son compte `users` par l'API PocketBase avec le SDK officiel. Les étapes historiques sont conservées ci-dessous ; la section « Alignement PocketBase et API » décrit l'état actuel.
 
 ## Tests automatisés
 
 ```powershell
+npm ci --prefix integration --ignore-scripts --no-audit --no-fund
+$env:RUN_JS_SDK_TEST = '1'
 go test ./... -count=1 -cover
 go vet ./...
+node --check internal/studio/web/client.js
+node --check integration/sdk.mjs
 ```
 
-Résultat : succès. Après ajout des tests des diagnostics et des sujets numériques Shopify, le package `internal/studio` contient 19 groupes de tests. Sa couverture d'instructions est de 87,7 % avec Go 1.27.2. Le code des commandes de lancement n'est pas couvert par ce pourcentage.
+Résultat : succès. Le package `internal/studio` contient 28 groupes de tests et sa couverture d'instructions est de 86,6 %. La gateway atteint 65,2 %. Le test Node exécute réellement le SDK officiel PocketBase `0.28.1` contre une instance HTTP de test. Sans `RUN_JS_SDK_TEST=1`, ce test est ignoré ; les autres tests Go restent exécutés.
 
 | Scénario | Résultat |
 | --- | --- |
@@ -29,9 +33,20 @@ Résultat : succès. Après ajout des tests des diagnostics et des sujets numér
 | Changement d'e-mail d'une identité existante | Même compte PocketBase |
 | Autre identité portant le même e-mail | Conflit, aucune fusion de compte |
 | E-mail du profil différent du claim vérifié | Pas de marquage `verified` |
-| Modification publique de l'identité Shopify ou inscription directe | Bloquées |
+| Modification publique des champs d'identité Shopify | Bloquée ; l'inscription native reste soumise à `CreateRule` |
 | Appel de l'API PocketBase avec le jeton émis | Autorisé pour son propre profil |
-| Renouvellement via `auth-refresh` | Le jeton reste identique, durée non prolongée |
+| Renouvellement via `auth-refresh` | Réponse native valide, jeton renouvelable selon la politique de collection |
+| Compte Shopify et compte créé avec mot de passe natif | Mêmes règles de liste, lecture, création, modification et suppression des documents privés |
+| Accès aux données d'un autre compte ou changement de propriétaire | Refusés pour les deux méthodes d'authentification |
+| Middleware `RequireAuth` et `e.Auth` | Compte chargé normalement pour les deux méthodes, visiteur refusé |
+| `AuthRule` et refus dans `OnRecordAuthRequest`, avant ou après `e.Next` | Refus respectés, aucun jeton ou cookie de succès exposé |
+| MFA activée pour le compte Shopify | Challenge natif requis, puis second facteur natif accepté |
+| Inscription Shopify avec `CreateRule` verrouillée | Refusée, aucun compte créé |
+| Politique existante de la collection | Règles, durée des jetons et réglages d'authentification conservés |
+| Hooks d'enrichissement et personnalisation de la réponse d'auth | Champs, métadonnées et jeton retournés par PocketBase conservés |
+| SDK officiel, compte Shopify et compte natif | Auth store, refresh, lecture et CRUD soumis aux mêmes règles |
+| Realtime local, compte Shopify et compte natif | Événement du propriétaire reçu, événement d'un autre compte filtré |
+| Gateway publique | Collections autorisées accessibles, admin et paramètres bloqués, chemins non canoniques refusés |
 | Jeton PocketBase signé mais expiré | Rejeté |
 | Requête de session ou de déconnexion depuis une autre origine | Bloquée |
 | Déconnexion locale | Cookie supprimé, session locale absente |
@@ -44,7 +59,7 @@ Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, u
 
 Le serveur simulé est sous notre contrôle. Ces tests vérifient le comportement du client et de PocketBase face au contrat simulé ; ils ne constituent pas un test des serveurs Shopify.
 
-## Exécutables et vérification HTTP manuelle
+## Première démonstration locale, avant l'alignement API
 
 Compilation réussie de `bin/studio.exe`, `bin/mockshop.exe` et `bin/gateway.exe` avec Go 1.27.2.
 
@@ -68,7 +83,32 @@ Le premier contrôle avec Go 1.27.0 et les dépendances réseau initiales signal
 
 Résultat final de govulncheck : zéro vulnérabilité atteignable détectée et zéro dans les packages importés. Le contrôle signale encore l'avis [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) sur les packages OpenPGP du module `x/crypto`. Ces packages ne sont pas importés par le projet. Ce contrôle n'est pas un audit de sécurité complet.
 
-## Validation encore nécessaire
+Le contrôle a été relancé après l'alignement PocketBase, avec le même résultat. `npm audit --json` dans `integration` ne signale aucune vulnérabilité. Le SHA-256 du SDK servi au navigateur correspond à celui du fichier distribué par le paquet npm officiel installé.
+
+## Alignement PocketBase et API
+
+Cette étape a été déployée sur le même tunnel le 15 octobre 2026 avec `bin/studio-native.exe` et `bin/gateway-native.exe`. Les compilations, les tests complets avec le SDK JavaScript et `go vet` passent.
+
+Le compte Shopify utilise désormais `users`, un jeton renouvelable standard et la finalisation `apis.RecordAuthResponse`. Les tests comparatifs créent aussi un compte par l'endpoint natif d'inscription, le connectent avec `auth-with-password` et vérifient les mêmes opérations sur une collection de documents avec relation de propriétaire. Ils testent les hooks et règles dans PocketBase, sans les remplacer par un faux moteur de permissions.
+
+Le test realtime ouvre une vraie connexion SSE locale, authentifie l'abonnement et compare les événements autorisés pour chaque compte. Il ne valide pas le realtime sur l'URL publique actuelle : les Quick Tunnels Cloudflare ne prennent pas en charge SSE. [Limites officielles](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+
+Contrôles distants après déploiement :
+
+| Endpoint | Résultat |
+| --- | --- |
+| `/studio?checked=1` | HTTP 200 |
+| `/studio/client.js` et `/studio/pocketbase.es.mjs` | HTTP 200, JavaScript servi localement |
+| `/api/collections/users/records`, sans authentification | HTTP 200, résultat filtré par les règles natives |
+| `/api/settings`, `/_/` et `/api/collections/_superusers/auth-with-password` | HTTP 404 |
+
+Dans son navigateur connecté à la vraie boutique, l'utilisateur a confirmé le message « API PocketBase : accès confirmé avec le SDK officiel. ». Il apparaît uniquement après récupération de la session, enregistrement du jeton dans `pb.authStore`, puis lecture réussie du propre compte par `getOne` sur l'API native. Ce n'est pas seulement un indicateur affiché après le callback Shopify.
+
+Les deux anciens comptes de démonstration dans `studio_customers` ont été conservés. Un compte lié à la vraie boutique est maintenant présent dans `users`. La sauvegarde cohérente précédant l'évolution du schéma est `pb_backups/before-native-auth-20261015.db`, ignorée par Git. Ces contrôles n'affichent ni données personnelles ni jetons.
+
+Limites : le parcours Shopify reste distinct de `authWithOAuth2`, et les hooks spécifiques à cet endpoint natif ne sont pas déclenchés. Le moteur MFA est testé, mais son interface de saisie et l'envoi réel des alertes ne le sont pas. La session PocketBase peut maintenant être renouvelée indépendamment de la session Shopify. Les détails d'intégration sont dans le [guide](README.md#intégrer-le-code-au-studio-existant).
+
+## Historique de validation Shopify et vérifications restantes
 
 Une vraie boutique de développement a ensuite été créée le 15 octobre 2026 avec Shopify CLI 4.9.4, à la demande de l'utilisateur :
 
@@ -135,7 +175,7 @@ Après une nouvelle ouverture du studio, l'utilisateur a confirmé voir son prof
 
 Le flux connecté a donc atteint la lecture Customer Account API, l'enregistrement du compte PocketBase et l'affichage de la page authentifiée. Aucune valeur d'e-mail, d'identité client ou de jeton n'a été affichée dans les sorties de diagnostic.
 
-L'utilisateur a signalé `[email protected]` à l'écran. La base ne contient pas ce texte et contient bien une adresse avec `@`. Cloudflare documente cette réécriture automatique du HTML et l'injection d'un script de décodage ; la politique CSP du studio bloque les scripts. La réponse envoie désormais `Cache-Control: no-store, no-transform` suivant la [documentation Cloudflare](https://developers.cloudflare.com/waf/tools/scrape-shield/email-address-obfuscation/#troubleshoot-email-obfuscation). Le test de page connectée vérifie cet en-tête et la présence de l'adresse de démonstration. La page distante non connectée a aussi été contrôlée après redémarrage avec `bin/studio.exe` ; l'affichage de l'e-mail réel après rafraîchissement reste à confirmer par l'utilisateur.
+L'utilisateur a signalé `[email protected]` à l'écran. La base ne contient pas ce texte et contient bien une adresse avec `@`. Cloudflare documente cette réécriture automatique du HTML et l'injection d'un script de décodage ; la politique CSP du studio bloque ces scripts injectés et autorise maintenant uniquement ses propres scripts de même origine. La réponse envoie `Cache-Control: no-store, no-transform` suivant la [documentation Cloudflare](https://developers.cloudflare.com/waf/tools/scrape-shield/email-address-obfuscation/#troubleshoot-email-obfuscation). Le test de page connectée vérifie cet en-tête et la présence de l'adresse de démonstration. La page distante non connectée a aussi été contrôlée après redémarrage avec `bin/studio.exe` ; l'affichage de l'e-mail réel après rafraîchissement reste à confirmer par l'utilisateur.
 
 Restent notamment à tester : prénom/nom avec des champs renseignés dans Shopify, affichage de l'e-mail après le correctif du tunnel, déconnexion et changement de compte, Chrome/Safari/mobile et permissions sur la future boutique commerciale. La connexion réussie sur une dev store Basic ne valide pas à elle seule tous ces environnements.
 

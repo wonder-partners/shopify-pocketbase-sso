@@ -6,6 +6,8 @@ La solution retenue utilise les nouveaux comptes clients Shopify, la Customer Ac
 
 Le flux est documenté par Shopify. Ce dépôt fournit l'adaptation Go/PocketBase et ses tests. Les tests locaux utilisent un fournisseur simulé et une vraie base PocketBase. L'app est installée sur la dev store Basic non-Plus. Le parcours anonyme a été vérifié contre les vrais serveurs Shopify, puis l'utilisateur a confirmé son arrivée connecté dans le studio. Le serveur a lu le profil réel et créé le compte PocketBase associé. Voir [TESTS.md](TESTS.md).
 
+L'étape d'intégration à PocketBase est également validée : le compte Shopify est maintenant enregistré dans `users`, reçoit un jeton PocketBase standard et accède à l'API avec le SDK officiel. L'utilisateur a confirmé le message « API PocketBase : accès confirmé avec le SDK officiel. » sur la vraie boutique. Les tests comparent les droits de ce compte à ceux d'un compte créé avec l'inscription et le mot de passe natifs.
+
 ## Faisabilité et pistes examinées
 
 | Piste | Conclusion pour ce projet |
@@ -77,7 +79,7 @@ La boutique de test créée pour ce projet est `example-store.myshopify.com`. La
 
 Les processus PocketBase, gateway et tunnel sont démarrés pour ce test. L'URL est temporaire et cesse de répondre si le tunnel ou le serveur est arrêté. Un nouveau tunnel peut produire un autre nom : modifier alors la configuration locale et le callback de l'app, valider puis redéployer.
 
-Pour terminer la validation, ouvrir la boutique dans son navigateur, se connecter comme **client** avec le code e-mail, puis ouvrir le studio dans le même profil navigateur. La connexion à l'admin marchand n'est pas une connexion client. Refaire ensuite le test dans une fenêtre privée en ouvrant directement le studio. Ne pas communiquer les codes reçus par e-mail.
+Pour reproduire la validation, ouvrir la boutique dans son navigateur, se connecter comme **client** avec le code e-mail, puis ouvrir le studio dans le même profil navigateur. La connexion à l'admin marchand n'est pas une connexion client. Refaire ensuite le test dans une fenêtre privée en ouvrant directement le studio. Ne pas communiquer les codes reçus par e-mail.
 
 Le parcours connecté a été confirmé par l'utilisateur après correction du sujet numérique Shopify. L'e-mail est présent dans le profil réel reçu ; les prénom et nom sont vides dans ce profil de test. Leur récupération est couverte par les tests simulés mais reste à confirmer avec un compte Shopify dont ces champs sont renseignés.
 
@@ -150,7 +152,7 @@ Arrêter les deux terminaux avec Ctrl+C avant de passer au test réel.
 
 Shopify exige un callback HTTPS et ne prend pas en charge `localhost` pour cette configuration. Pour le test, on peut utiliser un tunnel temporaire. [Prérequis Shopify](https://shopify.dev/docs/storefronts/headless/building-with-the-customer-account-api/getting-started).
 
-Le dépôt contient une petite gateway qui laisse passer uniquement `/studio` et ses sous-routes. L'admin PocketBase et l'API générale restent hors de ce tunnel de test.
+Le dépôt contient une gateway qui publie `/studio`, ses sous-routes, `/api/realtime` et les endpoints de l'API des collections explicitement autorisées. Par défaut, seule `users` est autorisée. L'admin PocketBase, les paramètres et les endpoints de schéma restent inaccessibles par ce tunnel. La gateway ne remplace pas les règles d'accès PocketBase et n'accorde aucun droit supplémentaire.
 
 1. Installer `cloudflared` selon sa [documentation officielle](https://developers.cloudflare.com/tunnel/downloads/).
 2. Depuis le projet, lancer `go run ./cmd/gateway` dans un terminal.
@@ -161,6 +163,8 @@ cloudflared tunnel --url http://127.0.0.1:8092
 ```
 
 Cloudflare affiche une URL temporaire telle que `https://exemple.trycloudflare.com`. Ce mode ne demande pas de compte Cloudflare. Le nom change au redémarrage et convient au développement. [Documentation des Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+
+Attention, les Quick Tunnels ne prennent pas en charge les Server-Sent Events utilisés par le realtime PocketBase. L'authentification et l'API HTTP sont testables avec cette URL ; pour le realtime distant, utiliser un hébergement ou un tunnel compatible SSE. Le realtime a été testé directement en local. [Limites officielles](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
 
 4. Pour notre propre app, renseigner l'URL dans `[customer_authentication].redirect_uris` du fichier `shopify.app.toml`, puis publier cette configuration. Pour la voie Headless, utiliser ses paramètres Customer Account API. L'adresse de retour est :
 
@@ -189,9 +193,17 @@ Pour le lien boutique, utiliser cette même adresse du studio dans la navigation
 
 Le package `internal/studio` contient le flux. Dans le hook `OnServe`, `studio.New` charge les métadonnées de la boutique, puis `Register` ajoute les routes. `main.go` donne un exemple complet. L'adaptation à une autre version de PocketBase doit être vérifiée avant de copier le code.
 
-La collection d'auth `studio_customers` est créée au premier démarrage. Elle stocke l'émetteur et le sujet OIDC, l'identifiant client Shopify, l'e-mail et les noms. Les opérations publiques de création et de modification sont verrouillées. Le client peut lire son propre enregistrement. La liaison repose sur le couple émetteur et sujet, jamais sur une recherche par e-mail.
+### Compte et règles PocketBase
 
-Pour une application qui possède déjà une collection `users`, prévoir une migration explicite de cette liaison et de ses relations. Ce prototype évite de modifier une collection existante.
+La collection d'auth est `users` par défaut, configurable avec `STUDIO_AUTH_COLLECTION`. Le code y ajoute les champs texte manquants `shopify_issuer`, `shopify_sub`, `shopify_customer_id`, `first_name` et `last_name`, ainsi qu'un index unique partiel sur le couple émetteur/sujet non vide. Les comptes natifs sans liaison Shopify restent possibles. Une collection non-auth ou `_superusers` est refusée.
+
+Les règles et les politiques existantes de la collection sont conservées : inscription, lecture, modification, `AuthRule`, durée des jetons, mot de passe, OTP, MFA et alertes. Une première inscription Shopify doit satisfaire `CreateRule`. Les champs d'identité Shopify sont gérés par le serveur ; les requêtes publiques de création ou modification ne peuvent pas les définir. La liaison ne recherche jamais un compte par e-mail. Un conflit avec un compte existant donne une erreur, sans fusion automatique.
+
+Les appels API ultérieurs suivent le fonctionnement PocketBase habituel : le middleware charge `e.Auth` depuis le jeton, les règles utilisent `@request.auth`, et les hooks des requêtes API, des modèles et d'enrichissement s'appliquent normalement. Les tests couvrent aussi les relations de propriétaire et le filtrage realtime. Rien n'est accordé implicitement à un compte parce qu'il provient de Shopify.
+
+L'ancienne collection de démonstration `studio_customers` est conservée. Il n'y a ni migration automatique de ses comptes ni réaffectation de ses relations. Une sauvegarde SQLite cohérente a été créée avant l'évolution du schéma dans `pb_backups/before-native-auth-20261015.db`, ignorée par Git. Dans un projet existant, vérifier les champs obligatoires et les types des champs avant intégration. Un champ Shopify déjà présent avec un type incompatible fait échouer le démarrage plutôt que modifier ce type.
+
+### Session et SDK officiel
 
 Le serveur rend une page connectée grâce à un cookie HttpOnly. Si le frontend doit utiliser le SDK JavaScript PocketBase sur la même origine, il peut récupérer le jeton local ainsi :
 
@@ -203,23 +215,34 @@ const response = await fetch('/studio/session', {
 if (!response.ok) throw new Error('Connexion Shopify requise');
 const { token, record } = await response.json();
 pb.authStore.save(token, record);
+const profile = await pb.collection(record.collectionName).getOne(record.id);
 ```
 
-Ce jeton est un jeton PocketBase, utilisable par ses règles d'accès. Il ne remplace pas un jeton Shopify. La gateway de test ne publie pas `/api`; pour utiliser le SDK depuis un navigateur distant, le déploiement final devra aussi desservir les routes PocketBase voulues. La [documentation PocketBase](https://pocketbase.io/docs/authentication/) explique les sessions SDK et les méthodes OAuth natives.
+Ce code suppose une instance `pb` du SDK officiel. Le prototype sert ce SDK, version `0.28.1` non modifiée, depuis `/studio/pocketbase.es.mjs` et l'utilise dans `/studio/client.js`. Aucun CDN n'est nécessaire. Le SDK transmet ensuite le jeton dans l'en-tête d'authentification standard ; le cookie seul n'authentifie pas les endpoints de l'API. La réponse de session est privée et réservée aux requêtes de même origine.
+
+Le jeton est un jeton PocketBase, pas un jeton Shopify. Pour publier une collection métier via la gateway de test, démarrer celle-ci avec, par exemple, `$env:STUDIO_PUBLIC_COLLECTIONS = 'users,documents'`. Définir ensuite les règles PocketBase de cette collection, par exemple `owner = @request.auth.id` pour les données privées du propriétaire. Si l'on change `STUDIO_AUTH_COLLECTION`, ajuster aussi cette liste. La [documentation PocketBase](https://pocketbase.io/docs/authentication/) explique les sessions SDK et les méthodes OAuth natives.
+
+### Ce qui reste personnalisé
+
+Après validation de Shopify, le code appelle `apis.RecordAuthResponse`. PocketBase applique alors `AuthRule`, `OnRecordAuthRequest`, la MFA, les alertes et l'enrichissement de la réponse. Un refus de hook ne délivre pas de cookie ou de jeton de succès. Une MFA activée renvoie le challenge natif `401` avec `mfaId`, sans session anticipée. L'interface de saisie du second facteur n'est pas encore fournie ; ce challenge peut être terminé avec les méthodes natives.
+
+Le flux Shopify n'est pas encore un fournisseur enregistré dans `authWithOAuth2`. Il ne déclenche donc pas `OnRecordAuthWithOAuth2Request`. La synchronisation du compte utilise `Save`, déclenche les hooks de modèle et contrôle explicitement `CreateRule` pour une inscription, mais ne passe pas par `OnRecordCreateRequest`. Les hooks d'une application qui doivent interdire une connexion Shopify doivent être placés sur `OnRecordAuthRequest` ou dans sa politique `AuthRule`, pas seulement dans un hook propre au login OAuth natif.
+
+Le package est encore sous `internal/studio`, dans un projet de démonstration. Ce n'est pas encore une dépendance Go installable dans un autre module. L'extraction en module indépendant et les migrations versionnées restent une étape distincte de l'alignement API réalisé ici.
 
 Les noms proviennent de la requête `customer` de la Customer Account API. Les champs sont documentés dans l'objet [Customer](https://shopify.dev/docs/api/customer/latest/objects/Customer). Ils peuvent être vides si le client ne les a pas renseignés.
 
 ## Limites du prototype à conserver en tête
 
-La session PocketBase dure 15 minutes et n'est pas renouvelable par `auth-refresh`. Une nouvelle entrée dans le studio peut relancer Shopify sans saisie si sa session reste active. Les jetons Shopify, y compris un éventuel refresh token, sont abandonnés après la lecture du profil. Ce choix évite leur stockage dans ce prototype et applique KISS au besoin actuel.
+La session utilise maintenant la durée et le renouvellement normaux des jetons de la collection PocketBase. `auth-refresh` et `/studio/session` peuvent la renouveler sans nouvelle authentification Shopify. La limite fixe de 15 minutes non renouvelables du premier prototype a été supprimée. Les jetons Shopify, y compris un éventuel refresh token, sont toujours abandonnés après la lecture du profil.
 
 Les informations de profil sont synchronisées à chaque authentification Shopify du studio. Elles ne sont pas actualisées en continu pendant une session locale.
 
-La déconnexion du studio efface son cookie. Elle ne déconnecte pas Shopify. Une déconnexion ou un changement de compte sur la boutique ne modifie pas immédiatement une session studio existante. Un jeton PocketBase déjà copié reste utilisable jusqu'à son expiration. Une déconnexion globale immédiate demanderait une gestion de session supplémentaire.
+La déconnexion du studio efface son cookie et le frontend vide `pb.authStore`. Elle ne déconnecte pas Shopify. Une déconnexion ou un changement de compte sur la boutique ne révoque pas une session PocketBase déjà créée. Un jeton PocketBase copié reste utilisable et renouvelable tant que PocketBase le juge valide. La durée maximale depuis la dernière connexion Shopify n'est donc plus limitée par ce prototype. Une déconnexion globale ou une réauthentification Shopify périodique demanderait une politique supplémentaire.
 
 Les tentatives OAuth durent cinq minutes et sont stockées en mémoire du processus. Un redémarrage annule les connexions en cours. Ce stockage suppose une instance, ou des sessions de routage affinitaires ; pour plusieurs instances, le remplacer par un stockage partagé à consommation atomique. Deux connexions simultanées dans deux onglets peuvent obliger à recommencer la première.
 
-Le prototype utilise une collection dédiée avec Shopify comme source d'authentification. Il ne fournit pas le parcours MFA ni les alertes de connexion propres à PocketBase. Une politique de sécurité existante sur `users` doit être intégrée explicitement.
+Les tests valident le moteur MFA et les hooks généraux d'authentification, pas une interface complète de gestion des facteurs ni un envoi réel d'e-mails d'alerte. Configurer et tester le transport mail de PocketBase dans le projet cible si ces fonctions sont activées.
 
 Les callbacks ne passent pas dans le journal d'activité PocketBase et le mode SQL debug est désactivé par défaut. Au déploiement, appliquer la même exclusion aux logs du reverse proxy et configurer les limites de requêtes. Le code valide les signatures OIDC avec JWKS, l'émetteur, l'audience, l'expiration, le nonce, le state et PKCE. [Bibliothèque go-oidc](https://pkg.go.dev/github.com/coreos/go-oidc/v3/oidc), [bibliothèque OAuth Go](https://pkg.go.dev/golang.org/x/oauth2).
 
@@ -238,7 +261,7 @@ Vérifier les cas suivants avec les mêmes domaines et le forfait non-Plus chois
 - Boutique connectée, aucune session studio : arrivée connectée au studio sans nouveau code e-mail.
 - Arrivée directe dans un profil navigateur privé : affichage du lien, connexion Shopify, puis retour connecté au studio.
 - Nom ou e-mail modifié dans Shopify : données mises à jour après une nouvelle authentification du studio.
-- Session Shopify expirée : le studio propose la connexion, sans boucle de redirection.
+- Session Shopify expirée et aucune session PocketBase valide : le studio propose la connexion, sans boucle de redirection. Une session PocketBase valide reste indépendante de Shopify.
 - Déconnexion studio, changement de client dans Shopify et session studio déjà ouverte : comportement conforme aux limites décrites ci-dessus.
 - Chrome et Safari, puis un téléphone, pour vérifier les cookies et redirections dans les navigateurs réellement utilisés.
 

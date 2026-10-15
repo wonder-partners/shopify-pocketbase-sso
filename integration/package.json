@@ -1,0 +1,8 @@
+{
+  "name": "shopify-pocketbase-integration-tests",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "pocketbase": "0.28.1"
+  }
+}

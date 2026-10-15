@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -23,6 +22,7 @@ type Config struct {
 	StudioURL         string
 	ClientID          string
 	ClientSecret      string // Optional: leave empty for a public client with PKCE.
+	AuthCollection    string // Defaults to the application's users auth collection.
 	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
 }
 
@@ -185,8 +185,6 @@ func (s *Service) fetchCustomer(ctx context.Context, accessToken string) (*custo
 	}
 	return c, nil
 }
-
-const sessionDuration = 15 * time.Minute
 
 // Return only fixed labels: verifier errors can contain claims or upstream bodies.
 func idTokenFailureReason(err error) string {

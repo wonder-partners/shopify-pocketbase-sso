@@ -62,6 +62,9 @@ func setup(t *testing.T, secret, fault string) *fixture {
 		t.Fatal(err)
 	}
 	f.s.Register(r)
+	r.GET("/native/whoami", func(e *core.RequestEvent) error {
+		return e.String(200, e.Auth.Id)
+	}).Bind(apis.RequireAuth())
 	mux, err := r.BuildMux()
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +189,7 @@ func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
 				t.Fatal("profile page must preserve the email and prohibit intermediary transformations")
 			}
 			for _, c := range callback.cookies {
-				if c.Name == f.s.cookieName("session") && (!c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != 900) {
+				if c.Name == f.s.cookieName("session") && (!c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != int(record.Collection().AuthToken.DurationTime().Seconds())) {
 					t.Fatal("incorrect session cookie flags")
 				}
 			}
@@ -420,14 +423,14 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	c.EmailAddress = &struct {
 		Email string `json:"emailAddress"`
 	}{Email: "new@example.test"}
-	updated, err := f.s.saveCustomer(r.GetString("shopify_sub"), c, claims{Email: "new@example.test", EmailVerified: true})
+	updated, err := f.s.saveCustomer(r.GetString("shopify_sub"), c, claims{Email: "new@example.test", EmailVerified: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Id != r.Id || updated.Email() != "new@example.test" {
 		t.Fatal("email change created a new identity")
 	}
-	_, err = f.s.saveCustomer("different-shopify-subject", c, claims{})
+	_, err = f.s.saveCustomer("different-shopify-subject", c, claims{}, nil)
 	if err == nil {
 		t.Fatal("another subject must not take over the existing email")
 	}
@@ -450,17 +453,17 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 	f := setup(t, "", "")
 	f.loginStudio()
 	token, r := f.session()
-	// No client can rewrite the Shopify identity or sign up outside Shopify.
+	// Shopify identity is server-managed, even though regular signup is allowed.
 	f.expect(f.request("PATCH", f.studio.URL+"/api/collections/"+collectionName+"/records/"+r.Id, "", `{"shopify_sub":"attacker"}`, token), 403)
-	f.expect(f.request("POST", f.studio.URL+"/api/collections/"+collectionName+"/records", "", `{"email":"attacker@example.test","password":"longpassword123","passwordConfirm":"longpassword123"}`, ""), 403)
+	f.expect(f.request("POST", f.studio.URL+"/api/collections/"+collectionName+"/records", "", `{"email":"attacker@example.test","password":"longpassword123","passwordConfirm":"longpassword123","shopify_sub":"preclaimed"}`, ""), 403)
 	refresh := f.request("POST", f.studio.URL+"/api/collections/"+collectionName+"/auth-refresh", "", "", token)
 	f.expect(refresh, 200)
 	var refreshed struct {
 		Token string `json:"token"`
 	}
 	json.Unmarshal([]byte(refresh.body), &refreshed)
-	if refreshed.Token != token {
-		t.Fatal("static session was renewed without Shopify")
+	if refreshed.Token == "" {
+		t.Fatal("native token renewal returned no token")
 	}
 	// A correctly signed but expired PB token must fail too.
 	expired, err := r.NewStaticAuthToken(time.Nanosecond)
