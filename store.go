@@ -76,6 +76,9 @@ func (s *Service) configureProvider() error {
 			return e.Next()
 		},
 	})
+	s.app.OnMailerRecordAuthAlertSend().Bind(&hook.Handler[*core.MailerRecordEvent]{
+		Id: "studio_shopify_auth_alert", Priority: -1000, Func: deferShopifyAuthAlert,
+	})
 	return nil
 }
 

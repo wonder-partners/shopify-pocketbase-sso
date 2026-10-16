@@ -72,7 +72,7 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 	var actionErr error
 	rejectedResponse := errors.New("OAuth hook wrote an error response")
 	err := originalApp.RunInTransaction(func(tx core.App) error {
-		e.App = tx
+		e.App = &shopifyAuthTransaction{App: tx, original: originalApp}
 		actionErr = action()
 		// Exact equality prevents a joined MFA + policy error from committing.
 		if actionErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
