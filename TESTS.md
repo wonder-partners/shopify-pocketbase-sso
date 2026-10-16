@@ -27,6 +27,10 @@ Résultat du 16 octobre 2026 après ajout du frontend inline : suite complète r
 
 Séparation en deux fichiers HTML le 16 octobre 2026 : `mise run check` passe avec les trois intégrations SDK, les protections CSP des deux pages, le callback dédié, le retour vers index après succès et le lien de reprise sans boucle silencieuse. Couvertures : hôte 48,4 %, cœur 86,5 %, migrations 81,0 %. Tests sur fixtures et bases temporaires uniquement ; aucun redémarrage de l’instance réelle et aucun nouveau login Shopify réel.
 
+## Passage à une route statique générale, 16 octobre 2026
+
+`GET /{path...}` utilise directement `apis.Static` sans route de callback dédiée ni filtre de préfixes. Le callback local et la fixture utilisent `/redirect.html`, et l’ancien `/auth/callback` doit retourner 404. Les routes API/admin natives restent prioritaires, les protections CSP/no-store/no-referrer sont vérifiées sur les deux pages et les fichiers absents restent 404. La configuration Shopify publiée reste sur l’ancien callback ; son changement est réservé à l’étape suivante. Validation : `mise run check` réussi, avec les trois intégrations SDK, Go vet/build, syntaxe JavaScript et diff. Couvertures : hôte 30,4 %, cœur 86,5 %, migrations 81,0 %. La baisse de couverture hôte suit la suppression des branches du routeur personnalisé. Ingress validé par cloudflared ; nouveau callback autorisé et admin en 404. Le traitement natif `apis.Static` exclut déjà les succès des logs, sans middleware supplémentaire.
+
 ## Nouveau contrat testé
 
 Le frontend appelle les API natives uniquement :

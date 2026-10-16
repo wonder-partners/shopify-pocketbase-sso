@@ -29,7 +29,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 	shop := httptest.NewUnstartedServer(nil)
 	apiURL := "http://" + api.Listener.Addr().String()
 	shopURL := "http://" + shop.Listener.Addr().String()
-	mock, err := mockshop.New(shopURL, apiURL+"/auth/callback", "numeric:")
+	mock, err := mockshop.New(shopURL, apiURL+"/redirect.html", "numeric:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 		t.Fatal(err)
 	}
 	s, err := studio.New(context.Background(), app, studio.Config{
-		ShopURL: shopURL, RedirectURL: apiURL + "/auth/callback",
+		ShopURL: shopURL, RedirectURL: apiURL + "/redirect.html",
 		ClientID: mockshop.ClientID, AllowLoopbackHTTP: true,
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 
 func TestFrontendRoutes(t *testing.T) {
 	_, _, handler := frontendFixture(t)
-	for _, path := range []string{"/", "/redirect.html", "/auth/callback?code=private-code&state=private-state"} {
+	for _, path := range []string{"/", "/redirect.html", "/redirect.html?code=private-code&state=private-state"} {
 		t.Run(path, func(t *testing.T) {
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, httptest.NewRequest("GET", path, nil))
@@ -111,7 +111,7 @@ func TestFrontendRoutes(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{"/api/missing", "/_/missing", "/studio", "/studio/callback", "/studio/session", "/api/shopify/auth/start", "/api/shopify/auth/complete", "/missing.js", "/app.js", "/style.css"} {
+	for _, path := range []string{"/auth/callback", "/api/missing", "/_/missing", "/studio", "/studio/callback", "/studio/session", "/api/shopify/auth/start", "/api/shopify/auth/complete", "/missing.js", "/app.js", "/style.css"} {
 		for _, method := range []string{"GET", "POST"} {
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, httptest.NewRequest(method, path, nil))

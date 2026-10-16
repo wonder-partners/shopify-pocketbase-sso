@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -48,21 +47,8 @@ func registerFrontend(e *core.ServeEvent, publicDir string) {
 	headers := func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Cache-Control", "no-store")
 		e.Response.Header().Set("Referrer-Policy", "no-referrer")
-		e.Response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'sha256-N9BS+o6vejbwUNvO4t7plCX2BwjkU5RbxYUr1NcGhpY=' 'sha256-PemZzGviyoQOCNdhglqC/xq49IO+oaBtyxkjQ5CLZgY=' https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs; style-src 'sha256-yei8oNOF9sHbF446OM3MLvsCf260AGn0UerMMalr/cI=' 'sha256-f0Qn1uwWY58Q9SKxKxa55HAT3eVL8KiJgeuhzdMNT/w='; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+		e.Response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'sha256-Eh2mvTLmrjYZC4r938N6snm3j0RoDWZgRxDLMx95G/g=' 'sha256-BXlfnn725PDADNZEPVInYYkMxwFEfajpoxApEtxkdDA=' https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs; style-src 'sha256-yei8oNOF9sHbF446OM3MLvsCf260AGn0UerMMalr/cI=' 'sha256-f0Qn1uwWY58Q9SKxKxa55HAT3eVL8KiJgeuhzdMNT/w='; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 		return e.Next()
 	}
-	// Keep the registered callback URL while serving a dedicated HTML page.
-	e.Router.GET("/auth/callback", func(e *core.RequestEvent) error {
-		return e.FileFS(files, "redirect.html")
-	}).BindFunc(headers).Bind(apis.SkipSuccessActivityLog())
-	static := apis.Static(files, false)
-	e.Router.GET("/{path...}", func(e *core.RequestEvent) error {
-		path := e.Request.URL.Path
-		for _, prefix := range []string{"/api", "/_", "/studio"} {
-			if path == prefix || strings.HasPrefix(path, prefix+"/") {
-				return e.NotFoundError("Not found.", nil)
-			}
-		}
-		return static(e)
-	}).BindFunc(headers)
+	e.Router.GET("/{path...}", apis.Static(files, false)).BindFunc(headers)
 }

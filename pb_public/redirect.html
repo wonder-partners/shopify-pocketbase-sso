@@ -16,7 +16,7 @@ a { color: #215c42; }
 import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
 
 const pb = new PocketBase(window.location.origin);
-const redirectURL = new URL('/auth/callback', window.location.origin).href;
+const redirectURL = new URL('/redirect.html', window.location.origin).href;
 const status = document.getElementById('status');
 
 async function completeShopifyLogin() {

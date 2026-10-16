@@ -65,7 +65,7 @@ async function load(url = '/') {
     location.pathname = next.pathname;
     location.search = next.search;
   }};
-  const execute = current.pathname === '/auth/callback' ? redirectPage : loginPage;
+  const execute = current.pathname === '/redirect.html' ? redirectPage : loginPage;
   await execute(PocketBase, {getElementById: id => elements.get(id)}, location, history, sessionStorage);
   if (location.replacement) return load(location.replacement);
   return page;

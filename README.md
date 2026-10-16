@@ -48,7 +48,7 @@ Le state est désormais vérifié par le frontend, pas par le backend. La posses
 
 `main.go` reste un hôte PocketBase minimal. Il initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives.
 
-L'hôte enregistre aussi `apis.Static` pour servir `pb_public`, sans fallback HTML global. `/auth/callback` sert explicitement `redirect.html` pour traiter le retour OAuth. Les préfixes API, admin et les anciens chemins `/studio` ne sont pas servis par le frontend. Le service statique reste dans `main.go`.
+L'hôte enregistre une route générale `GET /{path...}` avec `apis.Static` pour servir directement les fichiers de `pb_public`, comme le binaire officiel. `/` sert `index.html` et `/redirect.html` sert `redirect.html`, sans route spéciale de callback ni filtre de préfixes personnalisé. Les routes API/admin natives gardent leur priorité. Le fallback vers index pour un fichier absent reste désactivé, car ces pages ne sont pas une SPA. Les en-têtes de protection et l’exclusion des requêtes statiques réussies des logs d’activité sont conservés.
 
 ## Page de test locale
 
@@ -68,7 +68,7 @@ mise run dev
 
 La tâche `dev` fournit les chemins absolus de `pb_data` et `pb_public` à partir de la racine du projet.
 
-L'adresse de test fixe est `https://sso.example.com`. Le tunnel Cloudflare nommé `studio-sso-dev` et son entrée DNS ont été créés. `cloudflared.yml` contient son identifiant et les règles d'exposition. Seuls `/`, `/auth/callback`, `/api/health` et les endpoints natifs `users` nécessaires à cette page sont transmis au serveur. Les autres chemins, dont l'admin et les API superuser, renvoient 404 au niveau du tunnel. Ces restrictions concernent l'accès public ; PocketBase reste inchangé en local.
+L'adresse de test fixe est `https://sso.example.com`. Le tunnel Cloudflare nommé `studio-sso-dev` et son entrée DNS ont été créés. `cloudflared.yml` contient son identifiant et les règles d'exposition. Seuls `/`, `/redirect.html`, `/api/health` et les endpoints natifs `users` nécessaires à cette page sont transmis au serveur. Les autres chemins, dont l'admin et les API superuser, renvoient 404 au niveau du tunnel. Ces restrictions concernent l'accès public ; PocketBase reste inchangé en local.
 
 Pour lancer le serveur et le tunnel dans un seul terminal :
 
@@ -80,7 +80,7 @@ Cette tâche regroupe `dev` et `tunnel` via les dépendances natives de mise, ex
 
 Le poste actuel a été autorisé avec `mise run tunnel:login`. Le certificat du compte et le fichier JSON privé du tunnel sont conservés dans `~/.cloudflared`, hors du dépôt. Un autre poste doit disposer des credentials du tunnel dans ce répertoire ; le certificat de connexion seul ne remplace pas ce fichier. Ne pas copier leur contenu dans Git ou dans les logs.
 
-Le frontend utilise l'origine courante et `/auth/callback`. `SHOPIFY_REDIRECT_URL` et le callback Shopify enregistré valent `https://sso.example.com/auth/callback`. La configuration a été publiée dans la version `studio-sso-4` le 16 octobre 2026 et sa valeur vérifiée par récupération depuis Shopify. Le nouveau login réel reste à tester ; cette publication n'a pas démarré le serveur Go.
+Le frontend et `SHOPIFY_REDIRECT_URL` utilisent désormais `https://sso.example.com/redirect.html`. **Publication Shopify à faire** : la version active `studio-sso-4` et `shopify-app/shopify.app.toml` conservent encore l’ancien `/auth/callback`. La prochaine étape sera de remplacer `customer_authentication.redirect_uris` par la nouvelle URL et de publier une version. Le login réel ne pourra être retesté qu’après cet alignement et le redémarrage du serveur et du tunnel. Aucune publication n’a été effectuée pendant le passage au routage statique général.
 
 La configuration de l'app est conservée dans `shopify-app/shopify.app.toml`, récupérée depuis la version publiée avant modification du seul callback client. Son état CLI local `.shopify/` est ignoré par Git. Pour la valider :
 
@@ -107,7 +107,7 @@ Cette correction a été appliquée le 16 octobre 2026. Le parcours silencieux a
 
 Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Cette origine est celle du frontend, pas nécessairement celle de l'API. Si le frontend et l'API ont des origines différentes, leur configuration CORS doit autoriser les requêtes nécessaires. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre l'en-tête `Origin` sans le réécrire.
 
-L'application hôte choisit et sert sa page de callback. Aucun chemin n'est imposé ou enregistré par le module Go. `/auth/callback` dans l'exemple ci-dessous est une convention d'illustration, pas une route fournie par la bibliothèque. L'URL complète choisie doit être identique dans le frontend, dans `RedirectURL` et dans la configuration Shopify.
+L'application hôte choisit et sert sa page de callback. Aucun chemin n'est imposé ou enregistré par le module Go. `/redirect.html` dans l'exemple ci-dessous est une convention d'illustration, pas une route fournie par la bibliothèque. L'URL complète choisie doit être identique dans le frontend, dans `RedirectURL` et dans la configuration Shopify.
 
 La collection d'auth est fixée à `users` et doit exister. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens.
 
@@ -117,7 +117,7 @@ La collection d'auth est fixée à `users` et doit exister. L'intégration n'y a
 
 Le frontend suit la séparation de l’exemple PocketBase « Manual code exchange » : `index.html` lance la connexion et vérifie l’accès API ; `redirect.html` vérifie le retour OAuth et échange le code. Les deux fichiers conservent leurs scripts et styles inline, avec le SDK officiel via CDN.
 
-Pour garder le callback Shopify déjà publié, `/auth/callback` sert `redirect.html`. Après succès, cette page revient à `/`, où le SDK restaure son auth store et vérifie l’accès API. En cas d’erreur ou d’absence de session Shopify, elle affiche un message et un lien `/?login` vers les boutons de connexion, sans nouvelle tentative silencieuse automatique.
+Le callback est directement le fichier statique `/redirect.html`. Après succès, cette page revient à `/`, où le SDK restaure son auth store et vérifie l’accès API. En cas d’erreur ou d’absence de session Shopify, elle affiche un message et un lien `/?login` vers les boutons de connexion, sans nouvelle tentative silencieuse automatique.
 
 Dans un frontend avec bundler et le SDK officiel installé :
 
@@ -127,7 +127,7 @@ import PocketBase from 'pocketbase';
 const pb = new PocketBase(window.location.origin);
 // Chemin choisi et servi par l'application hôte, pas par le module Go.
 // L'URL complète doit correspondre à SHOPIFY_REDIRECT_URL et au callback Shopify.
-const redirectURL = new URL('/auth/callback', window.location.origin).href;
+const redirectURL = new URL('/redirect.html', window.location.origin).href;
 ```
 
 Les deux fonctions suivantes suffisent pour le passage OAuth. Elles appartiennent au frontend hôte ; aucun helper JavaScript n'est ajouté au backend Go.

@@ -6,7 +6,7 @@ cloudflared = "2026.10.1"
 
 [env]
 SHOPIFY_SHOP_URL = 'https://example-store.myshopify.com'
-SHOPIFY_REDIRECT_URL = 'https://sso.example.com/auth/callback'
+SHOPIFY_REDIRECT_URL = 'https://sso.example.com/redirect.html'
 SHOPIFY_CUSTOMER_CLIENT_ID = 'REPLACE_WITH_SHOPIFY_CLIENT_ID'
 SSO_ALLOW_LOOPBACK_HTTP = '0'
 
