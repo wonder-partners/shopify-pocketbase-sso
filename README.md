@@ -88,6 +88,8 @@ The host project owns its fields and rules. The library enables the `shopify` pr
 
 Each discovery attempt has a 20-second deadline, with retry delays increasing from 1 second to a maximum of 60 seconds. The provider becomes available automatically after discovery succeeds. The persistent provider configuration and hooks are installed synchronously by `New`; discovery publishes its endpoints in memory without acquiring the database writer. `listAuthMethods()` uses the discovered authorization endpoint while preserving PocketBase's state, PKCE and nonce parameters. The context passed to `New` controls the service lifetime; cancellation or PocketBase termination stops pending requests and retries, even while another transaction holds the database writer. Use a lifetime context, such as `context.Background()` in the example, rather than a short startup timeout.
 
+The native `fields` query parameter on `listAuthMethods()` is applied after Shopify filtering and URL rewriting, including for the legacy `authProviders` response.
+
 Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
 Deleting a Shopify link, through the records API or a native security purge, also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409.

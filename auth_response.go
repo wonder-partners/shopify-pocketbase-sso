@@ -80,11 +80,19 @@ func (a *authResponseApp) OnRecordEnrich(tags ...string) *hook.TaggedHook[*core.
 // Preserve PocketBase's state, PKCE, nonce and all other native response fields.
 func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	original := e.Response
+	originalRequest := e.Request
+	if query := e.Request.URL.Query(); query.Has("fields") {
+		// Keep provider names and URLs until filtering and rewriting finish.
+		// The final JSON response applies PocketBase's native field picker.
+		e.Request = e.Request.Clone(e.Request.Context())
+		query.Del("fields")
+		e.Request.URL.RawQuery = query.Encode()
+	}
 	captured := &authResponseBuffer{header: original.Header().Clone()}
 	e.Response = captured
-	defer func() { e.Response = original }()
+	defer func() { e.Response, e.Request = original, originalRequest }()
 	err := e.Next()
-	e.Response = original
+	e.Response, e.Request = original, originalRequest
 	if err != nil {
 		return err
 	}
