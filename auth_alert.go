@@ -6,8 +6,13 @@ import (
 )
 
 func deferShopifyAuthAlert(e *core.MailerRecordEvent) error {
-	tx, ok := e.App.(*shopifyAuthTransaction)
-	if !ok {
+	var tx *shopifyAuthTransaction
+	switch app := e.App.(type) {
+	case *shopifyAuthTransaction:
+		tx = app
+	case *authResponseApp:
+		tx = app.transaction
+	default:
 		return e.Next()
 	}
 	// The mail event owns its message and remaining hook chain. Detach its

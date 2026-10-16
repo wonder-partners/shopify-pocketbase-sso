@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -353,6 +354,112 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type authJSONFailure struct{}
+
+func (authJSONFailure) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("project JSON serialization failed")
+}
+
+func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
+	for _, stage := range []string{"metadata", "marshaler", "enrichment", "signup"} {
+		t.Run(stage, func(t *testing.T) {
+			f := setup(t, "email")
+			var before *core.Record
+			var accountID, linkID string
+			if stage != "signup" {
+				f.login()
+				_, before = f.authRecord()
+				accountID = privateAccount(f, before.Id).Id
+				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": before.Id})
+				if err != nil {
+					t.Fatal(err)
+				}
+				linkID = link.Id
+				useNewDevice(f)
+			}
+			f.mock.Fault = ""
+			f.mock.ProfileEmail = "changed@example.test"
+			var sent atomic.Int32
+			f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
+				sent.Add(1)
+				return nil
+			})
+			if stage == "enrichment" {
+				f.app.OnRecordEnrich("users").BindFunc(func(e *core.RecordEnrichEvent) error {
+					if e.App.TxInfo() == nil {
+						t.Error("project enrich hook lost the actual transaction")
+					}
+					if _, err := e.App.DB().NewQuery("UPDATE users SET emailVisibility = true WHERE id = {:id}").Bind(dbx.Params{"id": e.Record.Id}).Execute(); err != nil {
+						return err
+					}
+					e.Record.WithCustomData(true).Set("extension", authJSONFailure{})
+					return e.Next()
+				})
+			} else {
+				f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+					var value any = func() {}
+					if stage == "marshaler" {
+						value = authJSONFailure{}
+					}
+					e.Meta = map[string]any{"extension": value}
+					return e.Next()
+				})
+			}
+			f.loginShop()
+			result := f.completeCallback(f.authorize(false))
+			f.expect(result, http.StatusBadRequest)
+			if sent.Load() != 0 {
+				t.Fatal("serialization failure sent a login alert")
+			}
+			if before == nil {
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName} {
+					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
+						t.Fatal("failed signup serialization left records in", collection, err)
+					}
+				}
+				return
+			}
+			after, err := f.app.FindRecordById("users", before.Id)
+			if err != nil || after.Email() != before.Email() || after.Verified() != before.Verified() || after.EmailVisibility() {
+				t.Fatal("serialization failure committed a profile or project DB change", err)
+			}
+			if privateAccount(f, before.Id).Id != accountID {
+				t.Fatal("serialization failure replaced the private identity")
+			}
+			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, linkID); err != nil {
+				t.Fatal("serialization failure lost the native identity", err)
+			}
+		})
+	}
+}
+
+type authJSONTransactionProbe struct {
+	app   core.App
+	calls *int
+}
+
+func (p authJSONTransactionProbe) MarshalJSON() ([]byte, error) {
+	(*p.calls)++
+	var one int
+	if err := p.app.DB().NewQuery("SELECT 1").Row(&one); err != nil {
+		return nil, errors.New("response serialization ran after the transaction ended")
+	}
+	return []byte(`"prepared"`), nil
+}
+
+func TestShopifyResponseIsSerializedOnceBeforeCommit(t *testing.T) {
+	f := setup(t, "")
+	calls := 0
+	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+		e.Meta = map[string]any{"probe": authJSONTransactionProbe{app: e.App, calls: &calls}}
+		return e.Next()
+	})
+	result := decodeAuth(t, f.login())
+	if calls != 1 || result.Meta["probe"] != "prepared" {
+		t.Fatal("native response was not serialized exactly once before commit")
 	}
 }
 

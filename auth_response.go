@@ -11,11 +11,11 @@ import (
 	"github.com/pocketbase/pocketbase/tools/hook"
 )
 
-// Track response scheduling and deferred alerts only for Shopify transactions.
+// Track prepared responses and deferred alerts only for Shopify transactions.
 type shopifyAuthTransaction struct {
 	core.App
-	original          core.App
-	responseScheduled bool
+	original         core.App
+	preparedResponse *authResponseBuffer
 }
 
 // PocketBase reuses its active transaction for nested calls. Keep this request's
@@ -24,19 +24,55 @@ func (tx *shopifyAuthTransaction) RunInTransaction(fn func(core.App) error) erro
 	return tx.App.RunInTransaction(func(core.App) error { return fn(tx) })
 }
 
-// PocketBase writes the native auth response after commit. Wrap its finalizer
-// after all registered auth hooks so a hook that skips Next cannot mark the
-// response as scheduled. Keep the wrapper local to this request's app.
+// Prepare native JSON before commit, retaining it separately so a project hook
+// can still reject the request or replace its response after calling Next.
 func (tx *shopifyAuthTransaction) OnRecordAuthRequest(tags ...string) *hook.TaggedHook[*core.RecordAuthRequestEvent] {
 	local := &hook.Hook[*core.RecordAuthRequestEvent]{}
 	local.BindFunc(func(e *core.RecordAuthRequestEvent) error {
 		finalizer := e.Event
 		return tx.App.OnRecordAuthRequest(tags...).Trigger(e, func(e *core.RecordAuthRequestEvent) error {
+			if e.Written() {
+				return finalizer.Next()
+			}
+			originalApp, originalResponse := e.App, e.Response
+			prepared := &authResponseBuffer{header: originalResponse.Header().Clone()}
+			e.App = &authResponseApp{App: originalApp, transaction: tx}
+			e.Response = prepared
+			defer func() { e.App, e.Response = originalApp, originalResponse }()
 			err := finalizer.Next()
-			if err == nil && !e.Written() {
-				tx.responseScheduled = true
+			if err == apis.ErrMFA && prepared.Written() {
+				// PocketBase exposes an MFA challenge eagerly to surrounding hooks.
+				if writeErr := prepared.sendTo(originalResponse); writeErr != nil {
+					return errors.Join(err, writeErr)
+				}
+			} else if err == nil && prepared.Written() {
+				tx.preparedResponse = prepared
 			}
 			return err
+		})
+	})
+	return hook.NewTaggedHook(local, tags...)
+}
+
+// Only the native response finalizer sees TxInfo=nil, which makes PocketBase
+// serialize immediately. Promoted DB methods still use the actual transaction.
+// Project enrich hooks receive the original app with its real transaction info.
+type authResponseApp struct {
+	core.App
+	transaction *shopifyAuthTransaction
+}
+
+func (a *authResponseApp) TxInfo() *core.TxAppInfo { return nil }
+
+func (a *authResponseApp) OnRecordEnrich(tags ...string) *hook.TaggedHook[*core.RecordEnrichEvent] {
+	local := &hook.Hook[*core.RecordEnrichEvent]{}
+	local.BindFunc(func(e *core.RecordEnrichEvent) error {
+		finalizer := e.Event
+		original := e.App
+		e.App = a.App
+		defer func() { e.App = original }()
+		return a.App.OnRecordEnrich(tags...).Trigger(e, func(e *core.RecordEnrichEvent) error {
+			return finalizer.Next()
 		})
 	})
 	return hook.NewTaggedHook(local, tags...)
@@ -107,6 +143,11 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 		authTx := &shopifyAuthTransaction{App: tx, original: originalApp}
 		e.App = authTx
 		actionErr = action()
+		if !captured.Written() && authTx.preparedResponse != nil {
+			if err := authTx.preparedResponse.sendTo(captured); err != nil {
+				return err
+			}
+		}
 		// Exact equality prevents a joined MFA + policy error from committing.
 		if actionErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
 			return nil
@@ -116,7 +157,7 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 		}
 		// A hook can stop the chain with nil without producing a response.
 		// Reject it before commit so the resulting HTTP 500 leaves no changes.
-		if !captured.Written() && !authTx.responseScheduled {
+		if !captured.Written() {
 			return e.InternalServerError("PocketBase auth response was not completed.", nil)
 		}
 		if captured.status >= http.StatusBadRequest {
