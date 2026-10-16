@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase/core"
@@ -25,6 +26,8 @@ type providerContextKey struct{}
 type providerContext struct {
 	service  *Service
 	verifier string
+	code     string
+	prepared *shopifyProvider
 }
 
 var pkceVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
@@ -82,6 +85,15 @@ func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*
 	s := flow.service
 	if p.RedirectURL() != s.oauth.RedirectURL || p.ClientId() != s.cfg.ClientID {
 		return nil, errors.New("invalid Shopify client or redirect URL")
+	}
+	if flow.prepared != nil {
+		if code != flow.code {
+			return nil, errors.New("Shopify code differs from the verified request")
+		}
+		verified := flow.prepared
+		p.service, p.subject = verified.service, verified.subject
+		p.profile, p.claims, p.token = verified.profile, verified.claims, verified.token
+		return p.token, nil
 	}
 	ctx := oidc.ClientContext(p.Context(), s.client)
 	// Exchange as a public PKCE client, never using PocketBase's config marker.
@@ -142,6 +154,9 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	var body struct {
 		Provider     string `json:"provider"`
 		CodeVerifier string `json:"codeVerifier"`
+		Code         string `json:"code"`
+		RedirectURL  string `json:"redirectURL"`
+		RedirectUrl  string `json:"redirectUrl"` // PocketBase's deprecated alias.
 	}
 	if err := e.BindBody(&body); err != nil {
 		return err
@@ -164,6 +179,33 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if !pkceVerifierPattern.MatchString(body.CodeVerifier) {
 		return e.BadRequestError("A valid PKCE verifier is required.", nil)
 	}
-	e.Request = e.Request.WithContext(context.WithValue(e.Request.Context(), providerContextKey{}, providerContext{s, body.CodeVerifier}))
-	return captureAuthResponse(e, e.Next)
+	config, ok := c.OAuth2.GetProviderConfig(providerName)
+	if !c.OAuth2.Enabled || !ok || body.Code == "" {
+		return e.Next() // Let PocketBase return its native configuration/form error.
+	}
+	provider, err := config.InitProvider()
+	if err != nil {
+		return e.InternalServerError("Failed to initialize the Shopify provider.", nil)
+	}
+	prepared, ok := provider.(*shopifyProvider)
+	if !ok {
+		return e.ForbiddenError("Missing Shopify provider.", nil)
+	}
+	if body.RedirectURL == "" {
+		body.RedirectURL = body.RedirectUrl
+	}
+	// Complete all Shopify I/O before acquiring the database write transaction.
+	// The native provider reuses this request-local verified result in its normal
+	// token/user lookup, without exchanging the code a second time.
+	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
+	defer cancel()
+	flow := providerContext{service: s, verifier: body.CodeVerifier, code: body.Code}
+	prepared.SetContext(context.WithValue(ctx, providerContextKey{}, flow))
+	prepared.SetRedirectURL(body.RedirectURL)
+	if _, err := prepared.FetchToken(body.Code); err != nil {
+		return err
+	}
+	flow.prepared = prepared
+	e.Request = e.Request.WithContext(context.WithValue(ctx, providerContextKey{}, flow))
+	return transactionalAuthResponse(e, e.Next)
 }

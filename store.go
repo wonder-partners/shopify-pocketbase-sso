@@ -83,14 +83,14 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	// Native OAuth can find a record by verified email or current auth header.
 	// Neither is sufficient for our policy: require an existing Shopify identity.
-	a, err := s.app.FindFirstRecordByFilter(accountsCollectionName,
+	a, err := e.App.FindFirstRecordByFilter(accountsCollectionName,
 		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	var r *core.Record
 	if a != nil {
-		r, err = s.app.FindRecordById(s.collectionID, a.GetString("user"))
+		r, err = e.App.FindRecordById(s.collectionID, a.GetString("user"))
 		if err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	// A previous native login may have committed its external link before an
 	// interruption prevented saving our private row. Recover only from that
 	// exact native identity link, never from an email/header fallback candidate.
-	link, err := s.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+	link, err := e.App.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"collectionRef": e.Collection.Id, "provider": providerName,
 		"providerId": identityID(s.issuer, p.subject),
 	})
@@ -109,7 +109,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		if r != nil && r.Id != link.RecordRef() {
 			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
 		}
-		r, err = s.app.FindRecordById(s.collectionID, link.RecordRef())
+		r, err = e.App.FindRecordById(s.collectionID, link.RecordRef())
 		if err != nil {
 			return err
 		}
@@ -120,7 +120,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	if r != nil {
 		e.Record, e.IsNewRecord = r, false
 	}
-	emailOwner, err := s.app.FindAuthRecordByEmail(s.collectionID, p.profile.EmailAddress.Email)
+	emailOwner, err := e.App.FindAuthRecordByEmail(s.collectionID, p.profile.EmailAddress.Email)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -140,7 +140,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
 		r.SetEmail(p.profile.EmailAddress.Email)
 		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
-		if err := s.app.Save(r); err != nil {
+		if err := e.App.Save(r); err != nil {
 			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)
 		}
 	}

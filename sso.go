@@ -61,8 +61,8 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 }
 
 // Register binds Shopify verification to PocketBase's native OAuth endpoint.
-// No custom route, login transaction or cookie is created. The frontend owns
-// its redirect callback and checks the state returned by listAuthMethods.
+// No custom route or cookie is created. The frontend owns its redirect callback
+// and checks the state returned by listAuthMethods.
 func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
 	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "shopify_oauth2", Func: s.nativeOAuthMiddleware})
 }

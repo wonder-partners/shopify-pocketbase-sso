@@ -2,21 +2,45 @@ package shopifysso
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// Buffer the native OAuth response until the complete hook chain succeeds.
-// A hook rejecting after e.Next() must not leak a previously written JWT.
-// This does not create cookies, mint tokens or replace PocketBase's response.
-func captureAuthResponse(e *core.RequestEvent, action func() error) error {
+// Commit the profile and native identity links only when the entire OAuth chain
+// accepts the request. A native MFA challenge accepts the Shopify factor and
+// must persist so that the second factor can use it. Buffer responses until the
+// transaction finishes, including errors written by hooks without returning one.
+func transactionalAuthResponse(e *core.RequestEvent, action func() error) error {
 	original := e.Response
+	originalApp := e.App
 	captured := &authResponseBuffer{header: original.Header().Clone()}
 	e.Response = captured
-	err := action()
+	defer func() {
+		e.Response, e.App = original, originalApp
+	}()
+	var actionErr error
+	rejectedResponse := errors.New("OAuth hook wrote an error response")
+	err := originalApp.RunInTransaction(func(tx core.App) error {
+		e.App = tx
+		actionErr = action()
+		// Exact equality prevents a joined MFA + policy error from committing.
+		if actionErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
+			return nil
+		}
+		if actionErr != nil {
+			return actionErr
+		}
+		if captured.status >= http.StatusBadRequest {
+			return rejectedResponse
+		}
+		return nil
+	})
 	e.Response = original
-	if err != nil && (!captured.Written() || captured.status < http.StatusBadRequest) {
+	e.App = originalApp
+	if err != nil && err != rejectedResponse {
 		return err
 	}
 	if !captured.Written() {
@@ -27,8 +51,8 @@ func captureAuthResponse(e *core.RequestEvent, action func() error) error {
 	}
 	original.WriteHeader(captured.status)
 	_, writeErr := original.Write(captured.Bytes())
-	if err != nil {
-		return err
+	if actionErr != nil {
+		return actionErr
 	}
 	return writeErr
 }

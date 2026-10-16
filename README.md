@@ -86,6 +86,8 @@ The host project owns its fields and rules. The library enables the `shopify` pr
 
 Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
+Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. Before commit, an authentication rule or request hook rejection rolls back these database changes. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.
+
 ## Minimal frontend example
 
 Use the official PocketBase SDK. Replace `users` with your chosen collection and serve the callback at the URL configured in both `RedirectURL` and Shopify.
