@@ -47,7 +47,7 @@ globalThis.fetch = async (url, options = {}) => {
 
 const pb = new PocketBase(input.url);
 // Execute exactly the public frontend example, rather than a second implementation.
-const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
 const marker = '<!-- native-redirect-example:start -->';
 const example = readme.slice(readme.indexOf(marker) + marker.length)
   .match(/\x60\x60\x60javascript\s*([\s\S]*?)\x60\x60\x60/)[1];

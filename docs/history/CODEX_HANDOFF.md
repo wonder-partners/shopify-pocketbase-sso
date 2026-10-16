@@ -1,5 +1,17 @@
 # Passation technique Codex vers T3 Code
 
+Archive. Les chemins et consignes ci-dessous décrivent les étapes passées. Pour l’état actuel, consulter le [README](../../README.md) et le [guide des tests](../../tests/README.md).
+
+## Bibliothèque et démo séparées, 16 octobre 2026
+
+Nouvelle tâche de Contributor : commencer l’extraction en bibliothèque Go autonome. Cette demande remplace les anciennes restrictions reportant le packaging à plus tard.
+
+Le module est désormais `github.com/Sov3rain/shopify-pocketbase-sso`, package public `shopifysso` à la racine. `internal/studio` est remplacé par ce package. L’API reste `New(ctx, app, Config)` puis `Register(router)` dans `OnServe`. `Config.AuthCollection` accepte un nom ou ID de collection d’auth existante, avec `users` par défaut. Collections ordinaires et superusers refusés. Le service conserve l’ID canonique pour ses requêtes. Une boutique et une collection par app restent le périmètre pris en charge.
+
+`main.go`, ses tests, `pb_public` et les migrations historiques sont déplacés dans `examples/demo`. Les migrations restent non importées. La bibliothèque ne lit aucune variable d’environnement ni aucun asset du dépôt. Les tâches mise lancent et compilent `./examples/demo`, tout en conservant `pb_data` à la racine. Le README racine décrit l’installation et le contrat d’intégration ; `examples/demo/README.md` décrit le développement local. Les anciens chemins des sections suivantes sont historiques.
+
+Validation : `mise tasks validate` et `mise run check` réussis, trois intégrations SDK incluses, couverture bibliothèque 87,0 %. Un module Go temporaire indépendant compile exactement l’exemple du README avec un `replace` local et importe seulement le package public. Aucun commit/tag publié, aucun serveur utilisateur redémarré, aucune base réelle ou configuration Shopify modifiée. Le login Shopify réel et la publication d’une version restent distincts de cette extraction.
+
 ## Callback statique publié dans Shopify, 16 octobre 2026
 
 Contributor a demandé de modifier l’app Shopify après le passage au routage statique général. Seul `customer_authentication.redirect_uris` dans `shopify-app/shopify.app.toml` a changé vers `https://sso.example.com/redirect.html`. Validation CLI réussie sans issue, puis publication autorisée via `mise exec -- shopify app deploy --path shopify-app --allow-updates --no-input`. Version publiée `studio-sso-5` : https://dev.shopify.com/dashboard/000000000/apps/000000000000/versions/0000000000000. Nouvelle récupération indépendante de la configuration depuis Shopify : nouveau callback présent, ancien absent. Répertoire de vérification laissé dans le dossier temporaire système, hors dépôt. Aucun changement de scopes, aucune suppression, aucune donnée PocketBase modifiée. Serveur et tunnel utilisateur non redémarrés. Prochaine action : redémarrer `mise run dev:public`, puis terminer le login réel et confirmer l’accès API. Les mentions de publication en attente ci-dessous sont historiques.

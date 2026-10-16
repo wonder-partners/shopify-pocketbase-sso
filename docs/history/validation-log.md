@@ -1,5 +1,21 @@
 # Validation du parcours OAuth natif par redirection
 
+Archive. Les chemins et consignes ci-dessous décrivent les étapes passées. Pour l’état actuel, consulter le [README](../../README.md) et le [guide des tests](../../tests/README.md).
+
+## Extraction de la bibliothèque, 16 octobre 2026
+
+Le package public `shopifysso` est à la racine du module `github.com/Sov3rain/shopify-pocketbase-sso`. L’hôte et ses pages sont dans `examples/demo`, les migrations historiques dans `examples/demo/migrations`. Les chemins cités dans les sections plus anciennes décrivent la structure antérieure.
+
+Validation locale : `mise tasks validate` et `mise run check` réussis, dont les trois intégrations avec le SDK officiel, Go vet, compilation de la démo, syntaxe JavaScript et contrôle du diff. Couverture de la bibliothèque : 87,0 %, démo : 30,4 %, migrations : 81,0 %.
+
+Les nouveaux tests vérifient une collection `members` choisie par nom ou ID : première connexion, reconnexion après changement d’e-mail, stockage de l’identité dans la bonne relation, règles natives, refresh, collection `users` préservée et refus d’échanger le code via une autre collection. La configuration d’une collection ordinaire ou superuser est refusée avant création du stockage privé.
+
+L’exemple Go du README a été compilé depuis un module temporaire `example.com/pocketbase-host` avec un `replace` local. La liste de ses dépendances ne contient que le package public de ce dépôt, sans démo, migrations ni simulateur. Cette vérification ne démontre pas une installation distante : aucun commit ou tag de cette extraction n’a été publié.
+
+Les bases et serveurs des tests sont temporaires. Aucune base réelle ni configuration Shopify n’a été modifiée et aucun serveur utilisateur n’a été redémarré.
+
+## Validations antérieures
+
 Environnement : Windows amd64, Go 1.27.2, PocketBase 0.40.5, SDK JavaScript officiel 0.28.1.
 
 ```powershell
@@ -70,7 +86,7 @@ Le fournisseur simulé utilise de vrais codes, PKCE, JWT signés, JWKS et GraphQ
 
 ## Exemple frontend exécuté avec le SDK officiel
 
-`integration/oauth.mjs` extrait et exécute directement les deux fonctions du [README](README.md). Il n'utilise pas une seconde implémentation du parcours.
+`integration/oauth.mjs` extrait et exécute directement les deux fonctions du [README](../../README.md). Il n'utilise pas une seconde implémentation du parcours.
 
 Ce test réalise toute la séquence, avec le SDK officiel et de vraies requêtes aux serveurs locaux :
 
@@ -111,4 +127,4 @@ La sauvegarde SQLite `pb_backups/before-native-redirect-20261015.db` précède l
 
 L'app Shopify, sa configuration et le callback enregistré n'ont pas été modifiés. Le tunnel de l'ancienne démonstration reste arrêté ; aucun frontend de démo n'a été réintroduit. Le nouveau parcours n'a pas encore été retesté contre la vraie boutique depuis un frontend hôte.
 
-Les migrations historiques restent testées séparément et ne sont pas importées par `main.go` ou le cœur. Les validations antérieures contre Shopify restent dans [docs/prototype-tests.md](docs/prototype-tests.md).
+Les migrations historiques restent testées séparément et ne sont pas importées par `main.go` ou le cœur. Les validations antérieures contre Shopify restent dans [docs/prototype-tests.md](prototype-tests.md).

@@ -6,29 +6,29 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Sov3rain/shopify-pocketbase-sso"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
-	"studio-sso/internal/studio"
 )
 
 func main() {
 	// Avoid SQL debug logs containing profile data, including when using go run.
 	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDev: false})
 	var publicDir string
-	app.RootCmd.PersistentFlags().StringVar(&publicDir, "publicDir", "./pb_public", "directory containing the test frontend, relative to the working directory")
+	app.RootCmd.PersistentFlags().StringVar(&publicDir, "publicDir", "./examples/demo/pb_public", "directory containing the test frontend, relative to the working directory")
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		publicPath, err := filepath.Abs(publicDir)
 		if err != nil {
 			return err
 		}
-		cfg := studio.Config{
+		cfg := shopifysso.Config{
 			ShopURL:           os.Getenv("SHOPIFY_SHOP_URL"),
 			RedirectURL:       os.Getenv("SHOPIFY_REDIRECT_URL"),
 			ClientID:          os.Getenv("SHOPIFY_CUSTOMER_CLIENT_ID"),
 			AllowLoopbackHTTP: os.Getenv("SSO_ALLOW_LOOPBACK_HTTP") == "1",
 		}
-		s, err := studio.New(context.Background(), app, cfg)
+		s, err := shopifysso.New(context.Background(), app, cfg)
 		if err != nil {
 			return err
 		}

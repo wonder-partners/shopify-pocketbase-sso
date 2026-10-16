@@ -5,7 +5,7 @@ import PocketBase from 'pocketbase';
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 function moduleFor(file) {
-  const html = readFileSync(new URL('../pb_public/' + file, import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../../examples/demo/pb_public/' + file, import.meta.url), 'utf8');
   const source = html.match(/<script type="module">\s*([\s\S]*?)<\/script>/)[1]
     .replace(/^import PocketBase[^\n]+\n/, '');
   return new AsyncFunction('PocketBase', 'document', 'location', 'history', 'sessionStorage', source);

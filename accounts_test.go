@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"database/sql"
@@ -34,7 +34,7 @@ func TestSetupRequiresTheHostUsersCollection(t *testing.T) {
 	if err := app.Delete(users); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCollection(app); err == nil {
+	if err := ensureCollection(app, "users"); err == nil {
 		t.Fatal("setup silently accepted a missing host auth collection")
 	}
 	if _, err := app.FindCollectionByNameOrId("users"); !errors.Is(err, sql.ErrNoRows) {
@@ -42,6 +42,30 @@ func TestSetupRequiresTheHostUsersCollection(t *testing.T) {
 	}
 	if _, err := app.FindCollectionByNameOrId(accountsCollectionName); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("failed setup provisioned a partial identities schema")
+	}
+}
+
+func TestSetupRejectsNonAuthAndSuperuserCollections(t *testing.T) {
+	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir()})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.ResetBootstrapState() })
+	base := core.NewBaseCollection("documents")
+	if err := app.Save(base); err != nil {
+		t.Fatal(err)
+	}
+	superusers, err := app.FindCollectionByNameOrId(core.CollectionNameSuperusers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{base.Name, base.Id, superusers.Name, superusers.Id} {
+		if err := ensureCollection(app, target); err == nil {
+			t.Fatalf("setup accepted invalid auth collection %q", target)
+		}
+	}
+	if _, err := app.FindCollectionByNameOrId(accountsCollectionName); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("invalid setup created private storage")
 	}
 }
 
@@ -70,7 +94,7 @@ func TestSetupPreservesUserSchemaIdentityAndNativeLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := ensureCollection(f.app); err != nil {
+		if err := ensureCollection(f.app, "users"); err != nil {
 			t.Fatal(err)
 		}
 	}

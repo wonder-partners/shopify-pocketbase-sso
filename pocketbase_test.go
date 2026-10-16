@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"encoding/json"
@@ -193,7 +193,7 @@ func TestExistingAuthCollectionPoliciesArePreserved(t *testing.T) {
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCollection(f.app); err != nil {
+	if err := ensureCollection(f.app, "users"); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, _ := f.app.FindCollectionByNameOrId("users")

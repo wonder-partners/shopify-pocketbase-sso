@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"encoding/json"
@@ -20,6 +20,47 @@ func nativeOAuthBody(t *testing.T, data map[string]string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestConfiguredAuthCollection(t *testing.T) {
+	for _, useID := range []bool{false, true} {
+		name := "name"
+		if useID {
+			name = "id"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setupCollection(t, "numeric:", "members", useID)
+			first := decodeAuth(t, f.login())
+			_, user := f.authRecord()
+			if user.Collection().Name != "members" {
+				t.Fatal("Shopify authenticated into the wrong collection")
+			}
+			private := privateAccount(f, user.Id)
+			relation := private.Collection().Fields.GetByName("user").(*core.RelationField)
+			if relation.CollectionId != user.Collection().Id {
+				t.Fatal("identity storage targets the wrong auth collection")
+			}
+			f.expect(f.request("GET", f.api.URL+"/api/collections/members/records/"+user.Id, "", "", first.Token), 200)
+			f.expect(f.request("POST", f.api.URL+"/api/collections/members/auth-refresh", "", "", first.Token), 200)
+			// Changing the profile still finds the same identity in the selected collection.
+			f.mock.ProfileEmail = "changed@example.test"
+			second := decodeAuth(t, f.login())
+			if second.Record["id"] != user.Id || second.Record["email"] != f.mock.ProfileEmail || second.Meta["isNew"] != false {
+				t.Fatal("configured collection lost the identity or profile synchronization")
+			}
+			users, err := f.app.FindCollectionByNameOrId("users")
+			if err != nil || users.OAuth2.Enabled || len(users.OAuth2.Providers) != 0 {
+				t.Fatal("setup modified the default users collection")
+			}
+			f.loginShop()
+			page := f.callback(f.authorize(false))
+			data := callbackData(t, page.body)
+			body := nativeOAuthBody(t, data)
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, body, ""), 403)
+			f.expect(f.request("POST", f.api.URL+"/api/collections/_superusers/auth-with-oauth2", f.api.URL, body, ""), 403)
+			f.expect(f.request("POST", f.api.URL+"/api/collections/"+user.Collection().Id+"/auth-with-oauth2", f.api.URL, body, ""), 200)
+		})
+	}
 }
 
 func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
@@ -265,7 +306,7 @@ func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
 	}
 	token, _ := legacy.NewAuthToken()
 	doc := createDocument(f, token, legacy.Id)
-	if err := ensureCollection(f.app); err != nil {
+	if err := ensureCollection(f.app, "users"); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeAuth(t, f.login())

@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"context"
@@ -153,7 +153,7 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if err := s.requireOrigin(e); err != nil {
 		return err
 	}
-	c, err := s.app.FindCollectionByNameOrId(collectionName)
+	c, err := s.app.FindCollectionByNameOrId(s.collectionID)
 	if err != nil {
 		return err
 	}

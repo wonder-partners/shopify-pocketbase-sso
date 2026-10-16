@@ -1,5 +1,7 @@
 # Historique des validations du prototype
 
+Archive. Les chemins et consignes ci-dessous décrivent les étapes passées. Pour l’état actuel, consulter le [README](../../README.md) et le [guide des tests](../../tests/README.md).
+
 Résultats conservés comme historique. La démonstration HTML, les cookies de session personnalisés et la gateway ont été retirés depuis. Les contrôles actuels sont décrits dans TESTS.md à la racine.
 
 Exécution le 15 octobre 2026, Windows amd64, Go 1.27.2 et PocketBase 0.40.5.

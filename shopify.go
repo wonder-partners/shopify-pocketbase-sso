@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"bytes"
@@ -17,11 +17,14 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// Config selects the trusted Shopify shop, public OAuth client and host collection.
+// Configuration is supplied by the host; this package does not read environment variables.
 type Config struct {
 	ShopURL           string
 	RedirectURL       string // Full callback URL chosen and served by the host frontend.
 	ClientID          string
-	AllowLoopbackHTTP bool // Only for the local mock and automated tests.
+	AuthCollection    string // Existing auth collection name or ID. Defaults to users.
+	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
 }
 
 type discovery struct {

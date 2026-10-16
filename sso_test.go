@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sov3rain/shopify-pocketbase-sso/internal/mockshop"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -21,7 +22,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/auth"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"golang.org/x/oauth2"
-	"studio-sso/internal/mockshop"
 )
 
 type fixture struct {
@@ -35,6 +35,8 @@ type fixture struct {
 	flows     map[string]browserFlow // Simulated sessionStorage, not server state.
 }
 
+const collectionName = "users"
+
 type browserFlow struct {
 	Name         string `json:"name"`
 	State        string `json:"state"`
@@ -44,6 +46,11 @@ type browserFlow struct {
 }
 
 func setup(t *testing.T, fault string) *fixture {
+	t.Helper()
+	return setupCollection(t, fault, "users", false)
+}
+
+func setupCollection(t *testing.T, fault, collection string, useID bool) *fixture {
 	t.Helper()
 	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
 	studioURL := "http://" + f.api.Listener.Addr().String()
@@ -70,11 +77,21 @@ func setup(t *testing.T, fault string) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if collection != "users" {
+		users = core.NewAuthCollection(collection)
+		users.CreateRule = types.Pointer("")
+	}
 	users.ViewRule = types.Pointer("id = @request.auth.id")
 	if err := f.app.Save(users); err != nil {
 		t.Fatal(err)
 	}
-	f.s, err = New(context.Background(), f.app, Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, AllowLoopbackHTTP: true})
+	cfg := Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, AllowLoopbackHTTP: true}
+	if useID {
+		cfg.AuthCollection = users.Id
+	} else if collection != "users" {
+		cfg.AuthCollection = collection
+	}
+	f.s, err = New(context.Background(), f.app, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +166,7 @@ func (f *fixture) loginShop() {
 
 func (f *fixture) start(silent bool) response {
 	f.t.Helper()
-	start := f.request("GET", f.api.URL+"/api/collections/users/auth-methods", "", "", "")
+	start := f.request("GET", f.api.URL+"/api/collections/"+f.s.cfg.AuthCollection+"/auth-methods", "", "", "")
 	f.expect(start, 200)
 	var result struct {
 		OAuth2 struct {
@@ -220,7 +237,7 @@ func (f *fixture) callback(callback string) response {
 		if q.Get("code") == "" {
 			return response{status: 400}
 		}
-		data = map[string]string{"provider": providerName, "collection": collectionName, "code": q.Get("code"), "codeVerifier": p.CodeVerifier, "redirectURL": f.s.cfg.RedirectURL}
+		data = map[string]string{"provider": providerName, "collection": f.s.cfg.AuthCollection, "code": q.Get("code"), "codeVerifier": p.CodeVerifier, "redirectURL": f.s.cfg.RedirectURL}
 	}
 	return response{status: 200, body: string(mustJSON(f.t, data))}
 }
@@ -509,7 +526,7 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 	if err := f.app.Save(before); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCollection(f.app); err != nil {
+	if err := ensureCollection(f.app, "users"); err != nil {
 		t.Fatal(err)
 	}
 	f.login()

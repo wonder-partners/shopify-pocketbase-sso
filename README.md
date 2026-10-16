@@ -1,115 +1,105 @@
 # Authentification Shopify dans PocketBase
 
-L'intégration ajoute un fournisseur `shopify` au parcours OAuth2 natif de PocketBase. Le frontend utilise `listAuthMethods()`, redirige vers Shopify, vérifie le retour puis appelle `authWithOAuth2Code()`. Le SDK reçoit le token PocketBase et met son auth store à jour.
+La bibliothèque Go ajoute un fournisseur `shopify` au parcours OAuth2 natif de PocketBase. Le frontend utilise `listAuthMethods()`, redirige vers Shopify puis appelle `authWithOAuth2Code()` après vérification du retour. PocketBase gère ensuite ses tokens, règles, hooks et MFA.
 
-Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucun packaging ni publication n'est préparé.
+## Bibliothèque et démonstration
 
-## Développement avec mise
+- La racine contient le package public `shopifysso`, sa configuration, le fournisseur OAuth, la validation OIDC et le stockage privé des identités.
+- Le projet hôte possède sa collection d’authentification, ses champs, ses règles, son frontend et son callback. La bibliothèque active OAuth2 et configure seulement le fournisseur `shopify`.
+- [`examples/demo`](examples/demo/README.md) contient l’exécutable, les deux pages HTML et les migrations historiques du prototype. Sa configuration Shopify et son tunnel restent dans ce même dossier. `mise.toml` à la racine fournit les commandes de développement et de validation.
+- `tests/sdk` contient les tests JavaScript avec le SDK officiel PocketBase. `internal/mockshop` simule Shopify pour les tests Go et SDK. La bibliothèque ne les importe pas et ne lit aucun fichier ni variable d’environnement du dépôt.
 
-Le projet utilise [mise-en-place](https://mise.jdx.dev/) pour Go `1.27.2`, Node `24.14.1`, cloudflared `2026.10.1`, Shopify CLI `4.9.4`, les variables locales et les tâches. npm est fourni avec Node. Les versions sont fixées dans `mise.toml`. Les outils sont installés dans le stockage de mise, sans copie dans le dépôt. `bin/` est réservé aux résultats de compilation régénérables de l'application ; les anciens exécutables du prototype ont été supprimés.
+L’arborescence sépare ces responsabilités :
 
-Après installation de mise, depuis la racine du dépôt :
-
-```powershell
-mise trust
-mise install
-mise run setup
+```text
+.
+├── *.go                      # Bibliothèque et tests Go associés
+├── go.mod / go.sum           # Module Go public
+├── mise.toml                 # Commandes de développement et de validation
+├── internal/mockshop/        # Fournisseur Shopify simulé pour les tests
+├── tests/
+│   ├── README.md             # Guide des tests
+│   └── sdk/                  # Tests JavaScript, package npm et version du SDK
+├── examples/demo/
+│   ├── main.go / main_test.go
+│   ├── pb_public/            # Pages de connexion et de retour OAuth
+│   ├── shopify-app/          # Configuration de l’app Shopify de test
+│   ├── cloudflared.yml       # Tunnel de la démo
+│   └── migrations/           # Migrations historiques du prototype
+└── docs/history/             # Enquêtes, validations et anciennes passations
 ```
 
-Les variables sont directement dans `[env]` de `mise.toml` : URL de boutique, URL de callback, Client ID public et exception HTTP loopback. L'intégration utilise exclusivement un client public PKCE, sans secret client à demander ou configurer. Aucun fichier local ou fichier d'exemple n'est nécessaire pour ce parcours.
+Un seul module Go suffit. Son import ne démarre aucun serveur et ne sert aucune page. Il enregistre la factory du fournisseur `shopify` auprès de PocketBase. `New` découvre les endpoints distants et configure la base, puis `Register` adapte les requêtes OAuth natives.
 
-mise charge automatiquement ces fichiers avec `mise run` et `mise exec`, sans script PowerShell à sourcer. L'ancien `config.local.ps1` a été retiré après migration.
+## Installation dans un projet Go PocketBase
 
-| Commande | Effet |
-| --- | --- |
-| `mise run setup` | Télécharge les modules Go et installe le SDK fixé pour les tests |
-| `mise run dev` | Lance PocketBase et le frontend sur `127.0.0.1:8090` |
-| `mise run tunnel` | Lance le tunnel nommé sur `sso.example.com` |
-| `mise run tunnel:login` | Autorise ce poste auprès du compte Cloudflare |
-| `mise run dev:public` | Lance le serveur et le tunnel en parallèle dans le même terminal |
-| `mise run test` | Prépare les dépendances et lance toute la suite, avec les trois intégrations SDK |
-| `mise run build` | Compile le binaire dans `bin/` |
-| `mise run check` | Lance tests, analyse Go, build, contrôles JavaScript et diff Git |
+Le chemin du module est `github.com/Sov3rain/shopify-pocketbase-sso`. Cette extraction est locale, sans version publiée à cette étape. Après publication d’un commit ou d’une version, l’installation se fera avec :
 
-`mise tasks` liste aussi les tâches individuelles `vet`, `check:js` et `check:diff`. Les tâches partent de la racine du projet et ne nécessitent pas d'activer mise dans le profil du shell. Les tests utilisent leurs propres serveurs et bases temporaires ; ils n'exigent pas de configuration Shopify locale. `mise.local.toml`, ignoré par Git, reste utilisable pour d'éventuelles surcharges personnelles.
-
-## Responsabilités
-
-- PocketBase génère le state, le verifier et le challenge PKCE via son endpoint natif `users/auth-methods`.
-- Le frontend conserve ces paramètres dans le `sessionStorage` de l'onglet, vérifie le state et son expiration au retour, puis les supprime avant tout échange.
-- Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère l'identifiant client et l'e-mail.
-- PocketBase crée ou retrouve le compte `users`, conserve la liaison dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
-
-Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. Le package `internal/studio` ne fournit aucune page HTML ni API de session parallèle. L'hôte sert deux pages de test minimales dans `pb_public`.
-
-Le state est désormais vérifié par le frontend, pas par le backend. La possession du verifier PKCE protège l'échange du code. Les codes à usage unique et leur expiration sont contrôlés par Shopify. Le délai de cinq minutes dans l'exemple est un contrôle local supplémentaire, pas une expiration imposée par notre serveur.
-
-## Configuration et hôte Go
-
-`main.go` reste un hôte PocketBase minimal. Il initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives.
-
-L'hôte enregistre une route générale `GET /{path...}` avec `apis.Static` pour servir directement les fichiers de `pb_public`, comme le binaire officiel. `/` sert `index.html` et `/redirect.html` sert `redirect.html`, sans route spéciale de callback ni filtre de préfixes personnalisé. Les routes API/admin natives gardent leur priorité. Le fallback vers index pour un fichier absent reste désactivé, car ces pages ne sont pas une SPA. Les en-têtes de protection et l’exclusion des requêtes statiques réussies des logs d’activité sont conservés.
-
-## Page de test locale
-
-`pb_public/index.html` et `pb_public/redirect.html` contiennent chacun leur CSS et leur JavaScript inline. Le SDK officiel est importé depuis jsDelivr, fixé à `0.28.1`. Aucune copie du SDK n'est conservée dans `pb_public`. La CSP autorise ce fichier CDN précis et les empreintes SHA-256 des blocs inline. Si ces blocs changent, mettre à jour leurs empreintes dans `main.go` ; les tests signalent un décalage. Le navigateur doit pouvoir joindre ce CDN ; les tests Node utilisent la même version installée dans `integration`.
-
-Les deux pages reprennent le flux [Manual code exchange de PocketBase](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), avec les deux fonctions testées ci-dessous. Une tentative silencieuse est faite à l'arrivée sans session locale. Le callback ne la relance jamais automatiquement. Les boutons permettent une connexion interactive, un test silencieux explicite, la vérification de l'API et la déconnexion locale. Après connexion, le callback revient à `/`, où une nouvelle instance du SDK restaure son auth store puis appelle `authRefresh()` et `getOne()` sur son propre compte.
-
-Les erreurs attendues de `prompt=none` proposent le bouton de connexion. Une MFA est signalée, sans interface de second facteur. Les tokens, codes OAuth, verifiers et identifiants Shopify bruts ne sont pas affichés. Le callback est servi en `no-store`, avec `Referrer-Policy: no-referrer` et une CSP adaptée au CDN.
-
-Lancement depuis la racine du dépôt, lorsque les URL de test sont alignées :
-
-```powershell
-mise run dev
+```sh
+go get github.com/Sov3rain/shopify-pocketbase-sso@<version-ou-commit>
 ```
 
-`--publicDir` vaut `./pb_public` par défaut, relatif au répertoire de travail, y compris avec un binaire placé dans `bin`. Utiliser un chemin absolu évite toute ambiguïté.
+Pour utiliser le checkout actuel depuis un autre module, ajouter temporairement un `replace` vers son chemin local, puis demander la dépendance :
 
-La tâche `dev` fournit les chemins absolus de `pb_data` et `pb_public` à partir de la racine du projet.
-
-L'adresse de test fixe est `https://sso.example.com`. Le tunnel Cloudflare nommé `studio-sso-dev` et son entrée DNS ont été créés. `cloudflared.yml` contient son identifiant et les règles d'exposition. Seuls `/`, `/redirect.html`, `/api/health` et les endpoints natifs `users` nécessaires à cette page sont transmis au serveur. Les autres chemins, dont l'admin et les API superuser, renvoient 404 au niveau du tunnel. Ces restrictions concernent l'accès public ; PocketBase reste inchangé en local.
-
-Pour lancer le serveur et le tunnel dans un seul terminal :
-
-```powershell
-mise run dev:public
+```sh
+go mod edit -replace=github.com/Sov3rain/shopify-pocketbase-sso=/chemin/vers/shopify-pocketbase-sso
+go get github.com/Sov3rain/shopify-pocketbase-sso
 ```
 
-Cette tâche regroupe `dev` et `tunnel` via les dépendances natives de mise, exécutées en parallèle. Garder au moins deux jobs disponibles, valeur par défaut sur ce poste ; si nécessaire, lancer `mise run --jobs 2 dev:public`. Les tâches `dev` et `tunnel` restent utilisables séparément. L'adresse du tunnel nommé reste identique après un arrêt et un redémarrage.
+Initialiser une fois le service dans `OnServe`, après le bootstrap et les migrations du projet hôte :
 
-Le poste actuel a été autorisé avec `mise run tunnel:login`. Le certificat du compte et le fichier JSON privé du tunnel sont conservés dans `~/.cloudflared`, hors du dépôt. Un autre poste doit disposer des credentials du tunnel dans ce répertoire ; le certificat de connexion seul ne remplace pas ce fichier. Ne pas copier leur contenu dans Git ou dans les logs.
+```go
+package main
 
-Le frontend, `SHOPIFY_REDIRECT_URL` et le callback Shopify publié utilisent `https://sso.example.com/redirect.html`. La version `studio-sso-5` a été publiée le 16 octobre 2026 ; une nouvelle récupération depuis Shopify confirme cette URL et l’absence de l’ancien callback. Redémarrer le serveur et le tunnel avec `mise run dev:public` pour charger les changements locaux, puis terminer la connexion réelle afin de vérifier l’accès API.
+import (
+    "context"
+    "log"
 
-La configuration de l'app est conservée dans `shopify-app/shopify.app.toml`, récupérée depuis la version publiée avant modification du seul callback client. Son état CLI local `.shopify/` est ignoré par Git. Pour la valider :
+    shopifysso "github.com/Sov3rain/shopify-pocketbase-sso"
+    "github.com/pocketbase/pocketbase"
+    "github.com/pocketbase/pocketbase/core"
+)
 
-```powershell
-mise exec -- shopify app config validate --path shopify-app --json
+func main() {
+    app := pocketbase.New()
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        sso, err := shopifysso.New(context.Background(), app, shopifysso.Config{
+            ShopURL: "https://ma-boutique.myshopify.com",
+            RedirectURL: "https://mon-frontend.example/redirect.html",
+            ClientID: "mon-client-public",
+            AuthCollection: "users",
+        })
+        if err != nil {
+            return err
+        }
+        sso.Register(e.Router)
+        return e.Next()
+    })
+    if err := app.Start(); err != nil {
+        log.Fatal(err)
+    }
+}
 ```
 
-Si Shopify affiche `redirect_uri mismatch` malgré un callback publié exact, vérifier qu'aucun ancien aperçu `shopify app dev` ne remplace encore la version active sur la dev store. Cet aperçu persiste après l'arrêt de la CLI. Pour restaurer la version publiée sur notre boutique de test :
+Le frontend doit servir son propre callback. La [démo](examples/demo/README.md) montre le service statique et la lecture des variables d’environnement. Aucun frontend, tunnel, outil Node ou migration du prototype n’est nécessaire pour importer et compiler la bibliothèque.
 
-```powershell
-mise exec -- shopify app dev clean --path shopify-app --store example-store.myshopify.com
-```
-
-Cette correction a été appliquée le 16 octobre 2026. Le parcours silencieux anonyme revient ensuite au studio et le bouton interactif ouvre le formulaire Shopify réel. Le login complet avec code e-mail reste à confirmer par l'utilisateur. Lancer `mise run dev:public` ne crée pas de preview Shopify.
+La compatibilité est actuellement testée avec PocketBase `0.40.5` et Go `1.27.2`, fixés dans `go.mod`. Le périmètre est une boutique et une collection d’auth par application PocketBase. Plusieurs instances PocketBase peuvent coexister dans le même processus, chacune avec son service. Changer de collection après la création des identités nécessite une migration du projet hôte. Aucun déplacement de comptes n’est automatique.
 
 ## Configuration du fournisseur
 
-| Paramètre Go | Variable d'environnement | Rôle |
+| Paramètre Go | Variable lue par la démo | Rôle |
 | --- | --- | --- |
 | `ShopURL` | `SHOPIFY_SHOP_URL` | Origine HTTPS de la boutique de confiance |
 | `RedirectURL` | `SHOPIFY_REDIRECT_URL` | Callback du frontend, enregistré à l'identique dans Shopify |
 | `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Client Customer Account API |
+| `AuthCollection` | Aucune dans la démo | Nom ou ID d’une collection d’auth existante, `users` par défaut |
 | `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement limitée au loopback |
 
 Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Cette origine est celle du frontend, pas nécessairement celle de l'API. Si le frontend et l'API ont des origines différentes, leur configuration CORS doit autoriser les requêtes nécessaires. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre l'en-tête `Origin` sans le réécrire.
 
 L'application hôte choisit et sert sa page de callback. Aucun chemin n'est imposé ou enregistré par le module Go. `/redirect.html` dans l'exemple ci-dessous est une convention d'illustration, pas une route fournie par la bibliothèque. L'URL complète choisie doit être identique dans le frontend, dans `RedirectURL` et dans la configuration Shopify.
 
-La collection d'auth est fixée à `users` et doit exister. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens.
+La collection d’auth choisie par `AuthCollection` doit exister. Les collections ordinaires et `_superusers` sont refusées. L'intégration n'y ajoute aucun champ et ne choisit aucune règle d'accès. Elle active OAuth2 et configure uniquement `shopify`, sans modifier les autres fournisseurs, le mot de passe, l'OTP, la MFA ou la durée des tokens. La règle de création du projet hôte décide si une première connexion peut créer un compte.
 
 `_shopifyIdentities` est une collection système avec les champs `user`, `issuer`, `subject` et `customerId`. Ses cinq règles API sont verrouillées. Les identifiants bruts sont réservés au serveur et aux superusers. Les prénoms et noms ne sont ni demandés ni synchronisés.
 
@@ -119,7 +109,7 @@ Le frontend suit la séparation de l’exemple PocketBase « Manual code exchang
 
 Le callback est directement le fichier statique `/redirect.html`. Après succès, cette page revient à `/`, où le SDK restaure son auth store et vérifie l’accès API. En cas d’erreur ou d’absence de session Shopify, elle affiche un message et un lien `/?login` vers les boutons de connexion, sans nouvelle tentative silencieuse automatique.
 
-Dans un frontend avec bundler et le SDK officiel installé :
+Adapter `pb.collection('users')` au nom de la collection configurée si elle diffère. Dans un frontend avec bundler et le SDK officiel installé :
 
 ```javascript
 import PocketBase from 'pocketbase';
@@ -186,7 +176,7 @@ Utilisation :
 
 Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics, avec le seul SDK externe fixé depuis le CDN. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
 
-Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. `loginWithShopify` se trouve dans `pb_public/index.html` et `completeShopifyLogin` dans `pb_public/redirect.html` ; un test vérifie leur parité.
+Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. `loginWithShopify` se trouve dans `examples/demo/pb_public/index.html` et `completeShopifyLogin` dans `examples/demo/pb_public/redirect.html` ; un test vérifie leur parité.
 
 ## Sécurité et limites
 
@@ -210,8 +200,8 @@ L'intégration ne conserve plus de transaction OAuth locale qui impose de rester
 
 ## Tests et historique
 
-Voir [TESTS.md](TESTS.md). Le fournisseur simulé est réservé aux tests ; aucune fausse boutique ni gateway n'est distribuée.
+Voir le [guide des tests](tests/README.md). Le fournisseur simulé est réservé aux tests ; aucune fausse boutique ni gateway n'est distribuée.
 
-Les migrations historiques de `migrations` restent testées mais ne sont pas importées par `main.go` ou le cœur. Ne pas réutiliser leurs anciens nettoyages sur un autre projet. Ce changement ne migre ni les comptes ni les liaisons Shopify existantes.
+Les migrations historiques de `examples/demo/migrations` restent testées mais ne sont pas importées par la bibliothèque ni par `examples/demo/main.go`. Ne pas réutiliser leurs anciens nettoyages sur un autre projet. Ce changement ne migre ni les comptes ni les liaisons Shopify existantes.
 
-L'enquête et les validations antérieures restent dans [docs/prototype-history.md](docs/prototype-history.md) et [docs/prototype-tests.md](docs/prototype-tests.md). Leurs anciens parcours et URL ne décrivent pas l'interface actuelle.
+L'enquête, les validations et les anciennes passations sont conservées dans [docs/history](docs/history/README.md). Leurs anciens parcours et URL ne décrivent pas l'interface actuelle.

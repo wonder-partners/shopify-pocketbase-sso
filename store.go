@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"database/sql"
@@ -13,25 +13,23 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
-const collectionName = "users"
-
-// The host owns users, its fields and its access rules. Only provision the
-// integration's private identities collection.
-func ensureCollection(app core.App) error {
+// The host owns the auth collection, its fields and its access rules.
+// Only provision the integration's private identities collection.
+func ensureCollection(app core.App, collectionName string) error {
 	return app.RunInTransaction(func(tx core.App) error {
 		c, err := tx.FindCollectionByNameOrId(collectionName)
 		if err != nil {
 			return err
 		}
-		if !c.IsAuth() || c.Name != collectionName {
-			return errors.New("Shopify requires the users auth collection")
+		if !c.IsAuth() || c.Name == core.CollectionNameSuperusers {
+			return errors.New("Shopify requires a non-superuser auth collection")
 		}
 		return ensureAccountsCollection(tx, c)
 	})
 }
 
 func (s *Service) configureProvider() error {
-	c, err := s.app.FindCollectionByNameOrId(collectionName)
+	c, err := s.app.FindCollectionByNameOrId(s.cfg.AuthCollection)
 	if err != nil {
 		return err
 	}
@@ -56,6 +54,7 @@ func (s *Service) configureProvider() error {
 	if err := s.app.Save(c); err != nil {
 		return err
 	}
+	s.collectionID = c.Id
 	s.app.OnRecordAuthWithOAuth2Request(c.Name).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
 		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,
 	})
@@ -90,7 +89,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	var r *core.Record
 	if a != nil {
-		r, err = s.app.FindRecordById(collectionName, a.GetString("user"))
+		r, err = s.app.FindRecordById(s.collectionID, a.GetString("user"))
 		if err != nil {
 			return err
 		}
@@ -109,7 +108,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		if r != nil && r.Id != link.RecordRef() {
 			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
 		}
-		r, err = s.app.FindRecordById(collectionName, link.RecordRef())
+		r, err = s.app.FindRecordById(s.collectionID, link.RecordRef())
 		if err != nil {
 			return err
 		}
@@ -120,7 +119,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	if r != nil {
 		e.Record, e.IsNewRecord = r, false
 	}
-	emailOwner, err := s.app.FindAuthRecordByEmail(collectionName, p.profile.EmailAddress.Email)
+	emailOwner, err := s.app.FindAuthRecordByEmail(s.collectionID, p.profile.EmailAddress.Email)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

@@ -14,13 +14,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sov3rain/shopify-pocketbase-sso"
+	"github.com/Sov3rain/shopify-pocketbase-sso/internal/mockshop"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/pocketbase/pocketbase/ui"
-	"studio-sso/internal/mockshop"
-	"studio-sso/internal/studio"
 )
 
 func frontendFixture(t *testing.T) (string, string, http.Handler) {
@@ -50,7 +50,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 	if err := app.Save(users); err != nil {
 		t.Fatal(err)
 	}
-	s, err := studio.New(context.Background(), app, studio.Config{
+	s, err := shopifysso.New(context.Background(), app, shopifysso.Config{
 		ShopURL: shopURL, RedirectURL: apiURL + "/redirect.html",
 		ClientID: mockshop.ClientID, AllowLoopbackHTTP: true,
 	})
@@ -143,7 +143,7 @@ func TestFrontendMatchesREADMEAndPinnedSDK(t *testing.T) {
 		}
 		return strings.ReplaceAll(string(data), "\r\n", "\n")
 	}
-	readme := read("README.md")
+	readme := read("../../README.md")
 	_, example, _ := strings.Cut(readme, "<!-- native-redirect-example:start -->")
 	_, example, _ = strings.Cut(example, "```javascript\n")
 	example, _, _ = strings.Cut(example, "\n```")
@@ -154,7 +154,7 @@ func TestFrontendMatchesREADMEAndPinnedSDK(t *testing.T) {
 	var pkg struct {
 		DevDependencies map[string]string `json:"devDependencies"`
 	}
-	if err := json.Unmarshal([]byte(read("integration/package.json")), &pkg); err != nil {
+	if err := json.Unmarshal([]byte(read("../../tests/sdk/package.json")), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"pb_public/index.html", "pb_public/redirect.html"} {
@@ -170,7 +170,7 @@ func TestFrontendWithOfficialSDK(t *testing.T) {
 	}
 	apiURL, shopURL, _ := frontendFixture(t)
 	input, _ := json.Marshal(map[string]string{"url": apiURL, "shopURL": shopURL})
-	cmd := exec.Command("node", "integration/frontend.mjs")
+	cmd := exec.Command("node", "../../tests/sdk/demo.test.mjs")
 	cmd.Stdin = bytes.NewReader(input)
 	if err := cmd.Run(); err != nil {
 		// SDK errors may contain credentials. Never print subprocess output.

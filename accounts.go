@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"database/sql"
@@ -31,7 +31,7 @@ func ensureAccountsCollection(app core.App, users *core.Collection) error {
 	}
 	relation, ok := c.Fields.GetByName("user").(*core.RelationField)
 	if !ok || relation.CollectionId != users.Id || relation.MaxSelect != 1 || !relation.Required || !relation.CascadeDelete {
-		return errors.New("_shopifyIdentities.user must be a required cascading relation to users")
+		return errors.New("_shopifyIdentities.user must be a required cascading relation to the configured auth collection")
 	}
 	for _, field := range []string{"issuer", "subject", "customerId"} {
 		f, ok := c.Fields.GetByName(field).(*core.TextField)

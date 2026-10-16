@@ -1,4 +1,4 @@
-module studio-sso
+module github.com/Sov3rain/shopify-pocketbase-sso
 
 go 1.27.2
 

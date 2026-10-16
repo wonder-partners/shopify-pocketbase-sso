@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ func TestOfficialPocketBaseJavaScriptSDK(t *testing.T) {
 		{"id": shop.Id, "token": token, "otherDoc": nativeDoc},
 		{"id": nativeID, "token": native.Token, "otherDoc": shopDoc},
 	}})
-	script, _ := filepath.Abs("../../integration/sdk.mjs")
+	script, _ := filepath.Abs("tests/sdk/sdk.test.mjs")
 	cmd := exec.Command("node", script)
 	cmd.Stdin = bytes.NewReader(input)
 	// Do not print error bodies: SDK exceptions can include request auth data.
@@ -41,7 +41,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 	f := setup(t, "numeric:")
 	input := map[string]string{"url": f.api.URL, "shopURL": f.shop.URL, "redirectURL": f.s.cfg.RedirectURL}
 	data, _ := json.Marshal(input)
-	script, _ := filepath.Abs("../../integration/oauth.mjs")
+	script, _ := filepath.Abs("tests/sdk/oauth.test.mjs")
 	cmd := exec.Command("node", script)
 	cmd.Stdin = bytes.NewReader(data)
 	if err := cmd.Run(); err != nil {

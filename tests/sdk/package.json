@@ -1,5 +1,5 @@
 {
-  "name": "shopify-pocketbase-integration-tests",
+  "name": "shopify-pocketbase-sdk-tests",
   "private": true,
   "type": "module",
   "devDependencies": {

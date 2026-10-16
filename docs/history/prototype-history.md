@@ -1,5 +1,7 @@
 # Historique du prototype, avant nettoyage
 
+Archive. Les chemins et consignes ci-dessous décrivent les étapes passées. Pour l’état actuel, consulter le [README](../../README.md) et le [guide des tests](../../tests/README.md).
+
 Ce document conserve l'enquête et les étapes précédentes. Ses commandes, routes de démonstration et URL de tunnel ne décrivent plus le code actuel. Utiliser le README à la racine pour l'intégration actuelle.
 
 Enquête de faisabilité et prototype, 15 octobre 2026.

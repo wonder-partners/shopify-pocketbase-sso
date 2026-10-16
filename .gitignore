@@ -6,5 +6,5 @@
 /config.local.ps1
 /mise.local.toml
 /.env
-/integration/node_modules/
-/shopify-app/.shopify/
+/tests/sdk/node_modules/
+/examples/demo/shopify-app/.shopify/

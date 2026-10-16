@@ -1,4 +1,4 @@
-package studio
+package shopifysso
 
 import (
 	"context"
@@ -14,9 +14,11 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// Service connects one Shopify shop to one PocketBase auth collection.
 type Service struct {
 	app             core.App
 	cfg             Config
+	collectionID    string
 	origin          string
 	client          *http.Client
 	oauth           oauth2.Config
@@ -24,7 +26,13 @@ type Service struct {
 	issuer, graphql string
 }
 
+// New discovers Shopify's endpoints and configures the existing auth collection
+// and private identity storage. Call it after PocketBase has bootstrapped, then
+// call Register with the host router before serving requests.
 func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
+	if cfg.AuthCollection == "" {
+		cfg.AuthCollection = "users"
+	}
 	if err := checkURL(cfg.ShopURL, cfg.AllowLoopbackHTTP, true); err != nil {
 		return nil, err
 	}
@@ -43,7 +51,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if err := s.discover(ctx); err != nil {
 		return nil, err
 	}
-	if err := ensureCollection(app); err != nil {
+	if err := ensureCollection(app, cfg.AuthCollection); err != nil {
 		return nil, err
 	}
 	if err := s.configureProvider(); err != nil {
