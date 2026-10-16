@@ -92,6 +92,8 @@ Accounts are linked by Shopify identity. Matching email addresses do not merge a
 
 Deleting a Shopify link, through the records API or a native security purge, also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409.
 
+Unlink request responses, including custom responses written by project hooks, are buffered until the transaction completes. A storage or commit failure discards any pending success response; a project error response rolls back both identity deletions.
+
 When a previously unverified email becomes verified, PocketBase revokes the old OAuth links and refresh tokens. Only an accepted Shopify authentication can restore its current Shopify link and private identity within that same transaction. Native email verification or account recovery leaves the old Shopify identity revoked.
 
 Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. Before commit, an authentication rule or request hook rejection rolls back these database changes. A hook that stops the chain without writing an HTTP response also causes a rollback and returns HTTP 500. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.

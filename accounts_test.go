@@ -474,3 +474,82 @@ func TestNativeRecoveryRollsBackWhenShopifyRevocationFails(t *testing.T) {
 		t.Fatal("failed recovery lost the native identity", err)
 	}
 }
+
+func TestShopifyUnlinkBuffersProjectResponsesUntilCommit(t *testing.T) {
+	for _, scenario := range []string{"storage_error", "commit_failure", "success", "rejected"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t, "")
+			f.login()
+			token, user := f.authRecord()
+			accountID := privateAccount(f, user.Id).Id
+			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "storage_error" {
+				f.app.OnRecordDelete(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
+					return errors.New("private storage unavailable")
+				})
+			}
+			if scenario == "commit_failure" {
+				for _, query := range []string{
+					"CREATE TABLE unlink_parent (id TEXT PRIMARY KEY)",
+					"CREATE TABLE unlink_child (parent_id TEXT REFERENCES unlink_parent(id) DEFERRABLE INITIALLY DEFERRED)",
+				} {
+					if _, err := f.app.DB().NewQuery(query).Execute(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			f.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).BindFunc(func(e *core.RecordRequestEvent) error {
+				if scenario == "storage_error" {
+					if err := e.NoContent(http.StatusNoContent); err != nil {
+						return err
+					}
+				}
+				if err := e.Next(); err != nil {
+					return err
+				}
+				if scenario == "commit_failure" {
+					if _, err := e.App.DB().NewQuery("INSERT INTO unlink_child (parent_id) VALUES ('missing')").Execute(); err != nil {
+						return err
+					}
+					return e.NoContent(http.StatusNoContent)
+				}
+				e.Response.Header().Set("X-Project-Unlink", "custom")
+				if scenario == "rejected" {
+					return e.JSON(http.StatusForbidden, map[string]string{"message": "Project denied unlink."})
+				}
+				return e.JSON(http.StatusOK, map[string]bool{"unlinked": true})
+			})
+			result := f.request("DELETE", f.api.URL+"/api/collections/_externalAuths/records/"+link.Id, "", "", token)
+			status := http.StatusInternalServerError
+			if scenario == "success" {
+				status = http.StatusOK
+			} else if scenario == "rejected" {
+				status = http.StatusForbidden
+			} else if scenario == "commit_failure" {
+				status = http.StatusBadRequest
+			}
+			f.expect(result, status)
+			for _, target := range []struct{ collection, id string }{
+				{core.CollectionNameExternalAuths, link.Id}, {accountsCollectionName, accountID},
+			} {
+				_, err := f.app.FindRecordById(target.collection, target.id)
+				if scenario == "success" {
+					if !errors.Is(err, sql.ErrNoRows) {
+						t.Fatal("successful unlink kept an identity", err)
+					}
+				} else if err != nil {
+					t.Fatal("failed unlink lost an identity", err)
+				}
+			}
+			if scenario == "success" && (result.body != `{"unlinked":true}` || result.headers.Get("X-Project-Unlink") != "custom") {
+				t.Fatal("committed unlink lost its custom response")
+			}
+			if scenario == "rejected" && !strings.Contains(result.body, "Project denied unlink.") {
+				t.Fatal("rejected unlink lost its project response")
+			}
+		})
+	}
+}

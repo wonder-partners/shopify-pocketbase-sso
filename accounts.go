@@ -19,17 +19,29 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 		return e.Next()
 	}
 	originalApp := e.App
-	defer func() { e.App = originalApp }()
-	return originalApp.RunInTransaction(func(tx core.App) error {
+	originalResponse := e.Response
+	captured := &authResponseBuffer{header: originalResponse.Header().Clone()}
+	e.Response = captured
+	defer func() { e.App, e.Response = originalApp, originalResponse }()
+	rejectedResponse := errors.New("Shopify unlink hook wrote an error response")
+	err := originalApp.RunInTransaction(func(tx core.App) error {
 		e.App = tx
 		if err := e.Next(); err != nil {
 			return err
 		}
 		if e.Status() >= http.StatusBadRequest {
-			return router.NewApiError(e.Status(), "Shopify unlink request was rejected.", nil)
+			return rejectedResponse
 		}
 		return nil
 	})
+	e.App, e.Response = originalApp, originalResponse
+	if err != nil && err != rejectedResponse {
+		return err
+	}
+	if captured.Written() {
+		return captured.sendTo(originalResponse)
+	}
+	return nil
 }
 
 // Model hooks also cover native verification, OTP and password recovery purges.
