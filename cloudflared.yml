@@ -1,0 +1,9 @@
+# Credentials stay in the user's ~/.cloudflared directory, outside the project.
+tunnel: 00000000-0000-0000-0000-000000000000
+
+ingress:
+  # Expose only the frontend and the native APIs used by this login test.
+  - hostname: sso.example.com
+    path: ^/(auth/callback|api/health|api/collections/users/(auth-methods|auth-with-oauth2|auth-refresh|records/[^/]+))?$
+    service: http://127.0.0.1:8090
+  - service: http_status:404

@@ -2,10 +2,11 @@
 go = "1.27.2"
 node = "24.14.1"
 cloudflared = "2026.10.1"
+"npm:@shopify/cli" = "4.9.4"
 
 [env]
 SHOPIFY_SHOP_URL = 'https://example-store.myshopify.com'
-SHOPIFY_REDIRECT_URL = 'https://tunnel.example.com/studio/callback'
+SHOPIFY_REDIRECT_URL = 'https://sso.example.com/auth/callback'
 SHOPIFY_CUSTOMER_CLIENT_ID = 'REPLACE_WITH_SHOPIFY_CLIENT_ID'
 SSO_ALLOW_LOOPBACK_HTTP = '0'
 
@@ -27,8 +28,16 @@ env.RUN_JS_SDK_TEST = "1"
 run = "go test ./... -count=1 -cover"
 
 [tasks.tunnel]
-description = "Open a temporary HTTPS tunnel to the local PocketBase server"
-run = "cloudflared tunnel --url http://127.0.0.1:8090"
+description = "Run the named tunnel at sso.example.com"
+run = 'cloudflared tunnel --config "{{config_root}}/cloudflared.yml" run'
+
+[tasks."tunnel:login"]
+description = "Authorize cloudflared for the Cloudflare account once"
+run = "cloudflared tunnel login"
+
+[tasks."dev:public"]
+description = "Run the local server and HTTPS tunnel together"
+depends = ["dev", "tunnel"]
 
 [tasks.build]
 description = "Build the application into bin/"

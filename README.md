@@ -6,7 +6,7 @@ Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucu
 
 ## Développement avec mise
 
-Le projet utilise [mise-en-place](https://mise.jdx.dev/) pour Go `1.27.2`, Node `24.14.1`, cloudflared `2026.10.1`, les variables locales et les tâches. npm est fourni avec Node. Les versions sont fixées dans `mise.toml`. Les outils sont installés dans le stockage de mise, sans copie dans le dépôt. `bin/` est réservé aux résultats de compilation de l'application ; il contient aussi d'anciens builds du prototype conservés pour l'historique local.
+Le projet utilise [mise-en-place](https://mise.jdx.dev/) pour Go `1.27.2`, Node `24.14.1`, cloudflared `2026.10.1`, Shopify CLI `4.9.4`, les variables locales et les tâches. npm est fourni avec Node. Les versions sont fixées dans `mise.toml`. Les outils sont installés dans le stockage de mise, sans copie dans le dépôt. `bin/` est réservé aux résultats de compilation régénérables de l'application ; les anciens exécutables du prototype ont été supprimés.
 
 Après installation de mise, depuis la racine du dépôt :
 
@@ -24,7 +24,9 @@ mise charge automatiquement ces fichiers avec `mise run` et `mise exec`, sans sc
 | --- | --- |
 | `mise run setup` | Télécharge les modules Go et installe le SDK fixé pour les tests |
 | `mise run dev` | Lance PocketBase et le frontend sur `127.0.0.1:8090` |
-| `mise run tunnel` | Ouvre un tunnel HTTPS temporaire vers le serveur local |
+| `mise run tunnel` | Lance le tunnel nommé sur `sso.example.com` |
+| `mise run tunnel:login` | Autorise ce poste auprès du compte Cloudflare |
+| `mise run dev:public` | Lance le serveur et le tunnel en parallèle dans le même terminal |
 | `mise run test` | Prépare les dépendances et lance toute la suite, avec les trois intégrations SDK |
 | `mise run build` | Compile le binaire dans `bin/` |
 | `mise run check` | Lance tests, analyse Go, build, contrôles JavaScript et diff Git |
@@ -66,9 +68,33 @@ mise run dev
 
 La tâche `dev` fournit les chemins absolus de `pb_data` et `pb_public` à partir de la racine du projet.
 
-Dans un second terminal à la racine du projet, `mise run tunnel` lance le cloudflared géré par mise. Reporter l'origine HTTPS affichée dans `SHOPIFY_REDIRECT_URL`, avec `/auth/callback`, et enregistrer cette URL exacte dans Shopify avant le login réel. Redémarrer le serveur après modification de sa configuration. Le tunnel direct publie également les routes admin de PocketBase ; l'arrêter après le test.
+L'adresse de test fixe est `https://sso.example.com`. Le tunnel Cloudflare nommé `studio-sso-dev` et son entrée DNS ont été créés. `cloudflared.yml` contient son identifiant et les règles d'exposition. Seuls `/`, `/auth/callback`, `/api/health` et les endpoints natifs `users` nécessaires à cette page sont transmis au serveur. Les autres chemins, dont l'admin et les API superuser, renvoient 404 au niveau du tunnel. Ces restrictions concernent l'accès public ; PocketBase reste inchangé en local.
 
-Le frontend utilise l'origine courante et `/auth/callback`. Avant un login réel, aligner exactement cette URL, `SHOPIFY_REDIRECT_URL` et `[customer_authentication].redirect_uris`. La configuration locale et l'app Shopify utilisent encore `/studio/callback` ; cette étape n'a modifié ni l'une ni l'autre et n'a pas démarré le backend sur les données locales réelles.
+Pour lancer le serveur et le tunnel dans un seul terminal :
+
+```powershell
+mise run dev:public
+```
+
+Cette tâche regroupe `dev` et `tunnel` via les dépendances natives de mise, exécutées en parallèle. Garder au moins deux jobs disponibles, valeur par défaut sur ce poste ; si nécessaire, lancer `mise run --jobs 2 dev:public`. Les tâches `dev` et `tunnel` restent utilisables séparément. L'adresse du tunnel nommé reste identique après un arrêt et un redémarrage.
+
+Le poste actuel a été autorisé avec `mise run tunnel:login`. Le certificat du compte et le fichier JSON privé du tunnel sont conservés dans `~/.cloudflared`, hors du dépôt. Un autre poste doit disposer des credentials du tunnel dans ce répertoire ; le certificat de connexion seul ne remplace pas ce fichier. Ne pas copier leur contenu dans Git ou dans les logs.
+
+Le frontend utilise l'origine courante et `/auth/callback`. `SHOPIFY_REDIRECT_URL` et le callback Shopify enregistré valent `https://sso.example.com/auth/callback`. La configuration a été publiée dans la version `studio-sso-4` le 16 octobre 2026 et sa valeur vérifiée par récupération depuis Shopify. Le nouveau login réel reste à tester ; cette publication n'a pas démarré le serveur Go.
+
+La configuration de l'app est conservée dans `shopify-app/shopify.app.toml`, récupérée depuis la version publiée avant modification du seul callback client. Son état CLI local `.shopify/` est ignoré par Git. Pour la valider :
+
+```powershell
+mise exec -- shopify app config validate --path shopify-app --json
+```
+
+Si Shopify affiche `redirect_uri mismatch` malgré un callback publié exact, vérifier qu'aucun ancien aperçu `shopify app dev` ne remplace encore la version active sur la dev store. Cet aperçu persiste après l'arrêt de la CLI. Pour restaurer la version publiée sur notre boutique de test :
+
+```powershell
+mise exec -- shopify app dev clean --path shopify-app --store example-store.myshopify.com
+```
+
+Cette correction a été appliquée le 16 octobre 2026. Le parcours silencieux anonyme revient ensuite au studio et le bouton interactif ouvre le formulaire Shopify réel. Le login complet avec code e-mail reste à confirmer par l'utilisateur. Lancer `mise run dev:public` ne crée pas de preview Shopify.
 
 ## Configuration du fournisseur
 

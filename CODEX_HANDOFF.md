@@ -1,5 +1,53 @@
 # Passation technique Codex vers T3 Code
 
+## Correction du redirect_uri mismatch sur la boutique, 16 octobre 2026
+
+Contributor a rencontré `redirect_uri mismatch` à l'ouverture du domaine fixe. Diagnostic : frontend et requête d'autorisation utilisent exactement le callback attendu et le bon Client ID, un seul `redirect_uri`, version `studio-sso-4` active. L'erreur a été reproduite dans un profil navigateur privé neuf. La publication du TOML ne suffisait donc pas à prouver la configuration effective de la dev store.
+
+L'ancien parcours avait utilisé `shopify app dev`, dont l'aperçu persiste sur la dev store après publication d'une version. Commande corrective exécutée, ciblée sur la seule app/boutique de test : `mise exec -- shopify app dev clean --path shopify-app --store example-store.myshopify.com --no-input`. La CLI confirme l'arrêt du dev preview et la restauration de la version active.
+
+Vérification navigateur après correction : nouvelle ouverture de `https://sso.example.com/`, tentative silencieuse anonyme et retour au studio avec proposition de connexion, sans mismatch ni boucle ; clic sur le bouton interactif et affichage du vrai formulaire `Sign in - example-store` avec champ Email. Aucun e-mail ni code n'a été soumis et aucun login client complet n'est revendiqué. Le serveur local et le tunnel, déjà lancés par Contributor, n'ont pas été redémarrés ou arrêtés.
+
+Aucune modification du code d'auth, des callbacks publiés ou des données PocketBase pour cette correction. README et TESTS mis à jour. Prochaine action : Contributor ouvre à nouveau la racine du studio dans son navigateur et termine la connexion avec son compte de test, puis confirme le message d'accès API natif.
+
+## Callback Shopify publié, 16 octobre 2026
+
+Contributor a publié une version depuis l'UI puis demandé explicitement de modifier le callback client. L'autorisation porte sur l'app de test `Studio SSO`, Client ID déjà configuré dans le projet.
+
+- L'ancien dossier `shopify-app/` était vide. `shopify app config link` a récupéré la configuration actuellement publiée vers `shopify-app/shopify.app.toml`. App URL déjà fixée sur `https://sso.example.com`, scopes `customer_read_customers`, non embedded, installation moderne, aucun callback OAuth d'installation, webhooks `2026-10`. Le seul changement de configuration métier est le remplacement de l'ancien callback `trycloudflare` par `https://sso.example.com/auth/callback` dans `[customer_authentication].redirect_uris`.
+- Shopify CLI `4.9.4` est maintenant installé par mise via `npm:@shopify/cli`. Les premiers appels de récupération utilisaient la CLI globale de même version ; validation et publication ont utilisé celle gérée par mise. `shopify-app/.shopify/` est ignoré par Git, et le TOML public reste versionnable. Aucun scaffold ni extension de démonstration n'a été recréé.
+- Validation : `mise exec -- shopify app config validate --path shopify-app --json --no-input` retourne `valid: true`, sans issue.
+- Publication autorisée exécutée : `mise exec -- shopify app deploy --path shopify-app --allow-updates --no-input`. Version active publiée `studio-sso-4`, URL `https://dev.shopify.com/dashboard/000000000/apps/000000000000/versions/0000000000000`. Aucune suppression d'extension ou de configuration n'a été autorisée.
+- Vérification indépendante : nouvelle récupération depuis Shopify dans un répertoire temporaire, callback exactement conforme au domaine fixe, puis retrait du répertoire temporaire après contrôle de son chemin. README et TESTS mis à jour. Tâches mise et diff validés.
+
+Les trois callbacks sont maintenant alignés : frontend, configuration serveur mise et enregistrement Shopify. Les sections antérieures parlant d'un callback externe à publier ou d'un dossier Shopify vide sont historiques. Aucun serveur Go n'a été démarré et aucun login Shopify réel n'est revendiqué pour cette étape. Prochaine action : `mise run dev:public` puis vérifier la connexion sur la boutique de test avec Contributor.
+
+## Tunnel nommé et domaine fixe, 16 octobre 2026
+
+Contributor a confirmé disposer d'un domaine Cloudflare et donné `example.com`. Le sous-domaine de test retenu est `sso.example.com`. Il a effectué l'autorisation dans son navigateur après `mise run tunnel:login`. Aucun credential n'a été demandé dans le chat.
+
+- Tunnel Cloudflare `studio-sso-dev` créé, UUID `00000000-0000-0000-0000-000000000000`, puis CNAME `sso.example.com` ajouté avec la CLI, sans remplacement forcé d'un enregistrement existant. Aucun tunnel n'existait dans le compte lors de l'inspection initiale.
+- Certificat de compte et JSON privé du tunnel dans `C:/Users/USER/.cloudflared/`, hors du projet. Aucun secret n'est dans `cloudflared.yml`, qui contient seulement l'UUID et les règles ingress. La recherche du fichier de credentials par défaut a été vérifiée au démarrage du tunnel.
+- `mise run tunnel` utilise désormais ce fichier, plus de Quick Tunnel éphémère. `mise run dev:public` lance serveur et tunnel nommé ensemble. La tâche `tunnel:login` est ajoutée pour l'autorisation Cloudflare.
+- `SHOPIFY_REDIRECT_URL` dans mise vaut `https://sso.example.com/auth/callback`, identique à la convention frontend. Le callback enregistré chez Shopify n'a pas été modifié : cette étape reste nécessaire avant un test réel du login. L'ancien projet `shopify-app/` était vide à la dernière inspection.
+- Ingress minimal pour `/`, `/auth/callback`, `/api/health`, et `users/auth-methods`, `users/auth-with-oauth2`, `users/auth-refresh`, `users/records/{id}`. Tout le reste retourne 404 au niveau Cloudflare, notamment l'admin et les endpoints superuser. Aucune modification du fournisseur, des règles API PocketBase ou des données locales.
+
+Validation : onze tâches mise valides, règles ingress validées par cloudflared, routage local du callback et refus admin/superuser vérifiés. Démarrage temporaire du tunnel réussi avec quatre connexions QUIC ; contrôles HTTPS réels des chemins `/_/` et `/api/collections/_superusers/auth-methods` en 404. Aucun backend réel n'a été lancé et aucun login Shopify n'est revendiqué. Le processus de tunnel de vérification a été arrêté après ces contrôles. README mis à jour.
+
+Prochaine action : enregistrer le callback fixe dans l'app Shopify, puis `mise run dev:public` et test utilisateur sur la boutique de test. Le domaine est désormais stable ; ne pas revenir aux commandes Quick Tunnel historiques des sections ci-dessous.
+
+## Tâche combinée serveur et tunnel, 16 octobre 2026
+
+À la demande de Contributor, `mise run dev:public` regroupe désormais `dev` et `tunnel` avec `depends = ["dev", "tunnel"]`. Mise lance les deux tâches en parallèle dans le même terminal, sans script de wrapper ou nouveau gestionnaire de processus. Il faut au moins deux jobs disponibles ; `mise run --jobs 2 dev:public` le garantit si une configuration utilisateur limite le parallélisme.
+
+README mis à jour. Validation des tâches et dry-run de la tâche combinée effectués sans démarrer de serveur ou tunnel. Cette tâche ne modifie ni le callback configuré ni Shopify. Le Quick Tunnel donne une nouvelle origine à chaque lancement ; pour son alignement initial, garder le tunnel séparé actif pendant le redémarrage du serveur reste nécessaire. Ne pas présenter la tâche combinée comme une automatisation du login réel ou de la configuration Shopify.
+
+## Suppression des exécutables inutiles, 16 octobre 2026
+
+Contributor a explicitement demandé la suppression des binaires inutiles après inventaire. Les quinze exécutables restants dans `bin/`, dont les anciens serveurs `studio*`, `pocketbase-*`, `gateway*`, `mockshop.exe` et le build actuel `studio-sso.exe`, ont été supprimés après vérification qu'aucun processus ne les utilisait. Aucun autre fichier ni donnée locale n'a été supprimé. Les anciennes consignes de conservation de ces exécutables sont remplacées par cette demande.
+
+`mise run dev` et les tests n'utilisent pas ces fichiers. `mise run build` peut recréer le binaire actuel dans `bin/`. cloudflared reste installé et géré par mise hors du dépôt. Aucun build n'a été relancé après ce nettoyage pour ne pas recréer immédiatement les fichiers supprimés. README mis à jour.
+
 ## cloudflared géré par mise, 16 octobre 2026
 
 Contributor a demandé pourquoi les binaires étaient dans le projet et proposé leur gestion par mise. Inventaire : `cloudflared.exe` était un outil téléchargé, les autres exécutables sont des builds locaux des différentes étapes du prototype et le build actuel `studio-sso.exe`. Ces builds ne sont pas des dépendances installables par mise.

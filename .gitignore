@@ -7,3 +7,4 @@
 /mise.local.toml
 /.env
 /integration/node_modules/
+/shopify-app/.shopify/
