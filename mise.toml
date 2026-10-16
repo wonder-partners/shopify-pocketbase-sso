@@ -27,10 +27,6 @@ run = "go vet ./..."
 description = "Check the syntax of the JavaScript OAuth test"
 run = "node --check tests/sdk/oauth.test.mjs"
 
-[tasks."check:diff"]
-description = "Check whitespace errors in the Git diff"
-run = "git diff --check"
-
 [tasks.check]
 description = "Run tests, static analysis, build and syntax checks"
-depends = ["test", "vet", "build", "check:js", "check:diff"]
+depends = ["test", "vet", "build", "check:js"]

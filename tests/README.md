@@ -6,7 +6,7 @@ Les commandes se lancent depuis la racine du dépôt.
 mise run test
 ```
 
-Cette commande installe les dépendances Go et le SDK JavaScript fixé dans `sdk/package-lock.json`, puis exécute les tests Go et le test OAuth avec le SDK. `mise run check` ajoute l’analyse Go, la compilation de la bibliothèque, la syntaxe JavaScript et le contrôle du diff.
+Cette commande installe les dépendances Go et le SDK JavaScript fixé dans `sdk/package-lock.json`, puis exécute les tests Go et le test OAuth avec le SDK. `mise run check` ajoute l’analyse Go, la compilation de la bibliothèque et la vérification de syntaxe JavaScript.
 
 ## Où se trouvent les tests ?
 
