@@ -46,7 +46,6 @@ func (s *Service) configureProvider() error {
 		// clients. This public marker is never used by the provider's exchange.
 		config := core.OAuth2ProviderConfig{
 			Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: "public-pkce-no-secret",
-			AuthURL: s.oauth.Endpoint.AuthURL, TokenURL: s.oauth.Endpoint.TokenURL,
 			DisplayName: "Shopify", PKCE: types.Pointer(true),
 		}
 		replaced := false

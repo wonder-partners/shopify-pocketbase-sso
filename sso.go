@@ -96,12 +96,11 @@ func (s *Service) discoverInBackground() {
 		err := s.discover(ctx)
 		cancel()
 		if err == nil && s.ctx.Err() == nil {
-			err = s.configureProvider()
-			if err == nil && s.ctx.Err() == nil {
-				close(s.ready)
-				s.app.Logger().Info("Shopify authentication is ready")
-				return
-			}
+			// Provider configuration and hooks are already installed by New.
+			// Runtime endpoints need no database write or writer acquisition.
+			close(s.ready)
+			s.app.Logger().Info("Shopify authentication is ready")
+			return
 		}
 		if s.ctx.Err() != nil {
 			return

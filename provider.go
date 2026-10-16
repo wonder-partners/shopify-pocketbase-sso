@@ -148,9 +148,7 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if e.Request.Method == http.MethodGet && strings.HasPrefix(e.Request.URL.Path, "/api/collections/") && strings.HasSuffix(e.Request.URL.Path, "/auth-methods") {
 		// The native response contains a fresh PKCE verifier, not public metadata.
 		noStore(e)
-		if !s.isReady() {
-			return hideShopifyAuthMethod(e)
-		}
+		return s.shopifyAuthMethods(e)
 	}
 	if e.Request.Method != http.MethodPost || !strings.HasPrefix(e.Request.URL.Path, "/api/collections/") || !strings.HasSuffix(e.Request.URL.Path, "/auth-with-oauth2") {
 		return e.Next()

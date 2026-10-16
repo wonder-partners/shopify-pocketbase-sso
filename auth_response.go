@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -75,10 +76,9 @@ func (a *authResponseApp) OnRecordEnrich(tags ...string) *hook.TaggedHook[*core.
 	return hook.NewTaggedHook(local, tags...)
 }
 
-// PocketBase may retain Shopify's provider configuration across restarts.
-// Filter only Shopify while discovery is pending; all native methods and
-// response fields remain available, including the legacy providers list.
-func hideShopifyAuthMethod(e *core.RequestEvent) error {
+// Keep discovered endpoints in memory, so discovery never needs the DB writer.
+// Preserve PocketBase's state, PKCE, nonce and all other native response fields.
+func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	original := e.Response
 	captured := &authResponseBuffer{header: original.Header().Clone()}
 	e.Response = captured
@@ -98,14 +98,25 @@ func hideShopifyAuthMethod(e *core.RequestEvent) error {
 	if json.Unmarshal(captured.Bytes(), &result) != nil || result == nil {
 		return e.InternalServerError("Unable to read the authentication methods response.", nil)
 	}
+	ready := s.isReady()
 	filter := func(value any) []any {
 		providers, _ := value.([]any)
 		filtered := make([]any, 0, len(providers))
 		for _, item := range providers {
 			provider, _ := item.(map[string]any)
-			if provider["name"] != providerName {
-				filtered = append(filtered, item)
+			if provider["name"] == providerName {
+				if !ready {
+					continue
+				}
+				authURL, _ := provider["authURL"].(string)
+				_, query, ok := strings.Cut(authURL, "?")
+				if !ok {
+					continue // Do not advertise an incomplete native PKCE URL.
+				}
+				provider["authURL"] = s.oauth.Endpoint.AuthURL + "?" + query
+				provider["authUrl"] = provider["authURL"]
 			}
+			filtered = append(filtered, item)
 		}
 		return filtered
 	}

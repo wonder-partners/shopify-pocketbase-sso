@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -165,6 +166,141 @@ func TestTerminationCancelsInFlightDiscovery(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
+	for _, action := range []string{"ready", "terminate"} {
+		t.Run(action, func(t *testing.T) {
+			apiStarted, allowAPI := make(chan struct{}), make(chan struct{})
+			f := setupWithShopHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/.well-known/customer-account-api" {
+						close(apiStarted)
+						select {
+						case <-allowAPI:
+						case <-r.Context().Done():
+							return
+						}
+					}
+					next.ServeHTTP(w, r)
+				})
+			})
+			t.Cleanup(func() {
+				select {
+				case <-allowAPI:
+				default:
+					close(allowAPI)
+				}
+			})
+			select {
+			case <-apiStarted:
+			case <-time.After(time.Second):
+				t.Fatal("API discovery did not start")
+			}
+			var saves atomic.Int32
+			f.app.OnCollectionUpdate(f.s.collectionID).BindFunc(func(e *core.CollectionEvent) error {
+				saves.Add(1)
+				return e.Next()
+			})
+			writer := f.app.NonconcurrentDB().(*dbx.DB).DB()
+			var terminated chan error
+			err := f.app.RunInTransaction(func(core.App) error {
+				waits := writer.Stats().WaitCount
+				close(allowAPI)
+				if action == "ready" {
+					select {
+					case <-f.s.ready:
+						return nil
+					case <-time.After(time.Second):
+						return errors.New("discovery waited for the occupied database writer")
+					}
+				}
+				// Wait until discovery has returned from HTTP and either finished
+				// or reached the old, non-cancellable transaction acquisition.
+				deadline := time.NewTimer(time.Second)
+				defer deadline.Stop()
+				tick := time.NewTicker(time.Millisecond)
+				defer tick.Stop()
+				for writer.Stats().WaitCount == waits && !f.s.isReady() {
+					select {
+					case <-tick.C:
+					case <-deadline.C:
+						return errors.New("discovery did not finish its HTTP phase")
+					}
+				}
+				terminated = make(chan error, 1)
+				go func() { terminated <- f.app.OnTerminate().Trigger(&core.TerminateEvent{App: f.app}) }()
+				select {
+				case err := <-terminated:
+					terminated = nil
+					return err
+				case <-time.After(time.Second):
+					return errors.New("termination waited for the occupied database writer")
+				}
+			})
+			if terminated != nil {
+				select {
+				case <-terminated:
+				case <-time.After(2 * time.Second):
+					t.Fatal("termination did not finish after writer release")
+				}
+			}
+			select {
+			case <-f.s.done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("discovery did not finish after writer release")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saves.Load() != 0 {
+				t.Fatal("discovery wrote the provider configuration again")
+			}
+		})
+	}
+}
+
+func TestAuthMethodsUseDiscoveredEndpointWithNativePKCE(t *testing.T) {
+	f := setup(t, "")
+	c, _ := f.app.FindCollectionByNameOrId("users")
+	c.OAuth2.Providers[0].AuthURL = "https://stale.example/authorize"
+	if err := f.app.Save(c); err != nil {
+		t.Fatal(err)
+	}
+	result := f.request("GET", f.api.URL+"/api/collections/users/auth-methods", "", "", "")
+	f.expect(result, http.StatusOK)
+	type method struct {
+		Name, State, CodeVerifier, CodeChallenge, CodeChallengeMethod string
+		AuthURL                                                       string `json:"authURL"`
+		AuthUrl                                                       string `json:"authUrl"`
+	}
+	var methods struct {
+		OAuth2 struct {
+			Providers []method
+		}
+		AuthProviders []method
+	}
+	if err := json.Unmarshal([]byte(result.body), &methods); err != nil {
+		t.Fatal(err)
+	}
+	for _, providers := range [][]method{methods.OAuth2.Providers, methods.AuthProviders} {
+		if len(providers) != 1 {
+			t.Fatal("missing Shopify provider")
+		}
+		p := providers[0]
+		u, err := url.Parse(p.AuthURL + url.QueryEscape(f.s.cfg.RedirectURL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Scheme+"://"+u.Host+u.Path != f.s.oauth.Endpoint.AuthURL || p.AuthUrl != p.AuthURL {
+			t.Fatal("auth methods advertised a stale endpoint")
+		}
+		q := u.Query()
+		if q.Get("state") != p.State || q.Get("code_challenge") != p.CodeChallenge || q.Get("code_challenge_method") != "S256" || q.Get("nonce") != p.CodeChallenge || q.Get("redirect_uri") != f.s.cfg.RedirectURL || p.CodeVerifier == "" {
+			t.Fatal("rewritten endpoint changed native OAuth parameters")
+		}
+	}
+	f.login()
+}
+
 func TestLocalSetupErrorsFailWithoutDiscovery(t *testing.T) {
 	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir()})
 	if err := app.Bootstrap(); err != nil {
@@ -245,7 +381,7 @@ func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T)
 		t.Fatal("provider configuration overwrote another OAuth provider")
 	}
 	shopify, ok := c.OAuth2.GetProviderConfig(providerName)
-	if !ok || shopify.AuthURL != f.s.oauth.Endpoint.AuthURL || shopify.TokenURL != f.s.oauth.Endpoint.TokenURL {
+	if !ok || shopify.ClientId != f.s.cfg.ClientID || shopify.AuthURL != "" || shopify.TokenURL != "" {
 		t.Fatal("Shopify provider configuration was not saved")
 	}
 }
