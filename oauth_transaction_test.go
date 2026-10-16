@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
@@ -21,6 +22,10 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 			f := setup(t, "email")
 			f.login()
 			_, before := f.authRecord()
+			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": before.Id})
+			if err != nil {
+				t.Fatal(err)
+			}
 			f.mock.Fault = ""
 			f.mock.ProfileEmail = "changed@example.test"
 
@@ -77,6 +82,9 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 			}
 			if after.Email() != before.Email() || after.Verified() != before.Verified() {
 				t.Fatal("rejected login persisted the Shopify email or verification change")
+			}
+			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, link.Id); err != nil {
+				t.Fatal("rejected verification upgrade lost the original OAuth link", err)
 			}
 		})
 	}
@@ -162,6 +170,9 @@ func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
 		t.Fatal("accepted Shopify factor did not synchronize the profile")
 	}
 	privateAccount(f, user.Id)
+	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
+		t.Fatal("verification upgrade lost the Shopify link during MFA", err)
+	}
 	body := `{"identity":"changed@example.test","password":"TestPassword12345","mfaId":"` + challenge.MFAID + `"}`
 	second := f.request("POST", f.api.URL+"/api/collections/users/auth-with-password", "", body, "")
 	f.expect(second, http.StatusOK)

@@ -146,11 +146,21 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		delete(e.CreateData, "password")
 		delete(e.CreateData, "passwordConfirm")
 	} else {
+		upgradeVerified := !r.Verified() && e.OAuth2User.Email != ""
 		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
 		r.SetEmail(p.profile.EmailAddress.Email)
 		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
 		if err := e.App.Save(r); err != nil {
 			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)
+		}
+		// Verification revokes all old OAuth links. Native OAuth still holds
+		// the deleted Shopify link and won't recreate it, so restore only this
+		// exact identity within the auth transaction. Keep other links revoked.
+		if upgradeVerified && link != nil {
+			link.MarkAsNew()
+			if err := e.App.Save(link); err != nil {
+				return router.NewApiError(http.StatusConflict, "Unable to restore the Shopify identity link.", nil)
+			}
 		}
 	}
 	return e.Next()
