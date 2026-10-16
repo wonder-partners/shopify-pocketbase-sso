@@ -10,7 +10,7 @@ run = [
 ]
 
 [tasks.test]
-description = "Run all Go tests, including the two official SDK integrations"
+description = "Run all Go tests, including the official SDK OAuth integration"
 depends = ["setup"]
 env.RUN_JS_SDK_TEST = "1"
 run = "go test ./... -count=1 -cover"
@@ -24,11 +24,8 @@ description = "Run Go static analysis"
 run = "go vet ./..."
 
 [tasks."check:js"]
-description = "Check the syntax of the JavaScript SDK tests"
-run = [
-  "node --check tests/sdk/oauth.test.mjs",
-  "node --check tests/sdk/sdk.test.mjs",
-]
+description = "Check the syntax of the JavaScript OAuth test"
+run = "node --check tests/sdk/oauth.test.mjs"
 
 [tasks."check:diff"]
 description = "Check whitespace errors in the Git diff"
