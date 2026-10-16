@@ -78,6 +78,15 @@ func (a *authResponseApp) OnRecordEnrich(tags ...string) *hook.TaggedHook[*core.
 
 // Keep discovered endpoints in memory, so discovery never needs the DB writer.
 // Preserve PocketBase's state, PKCE, nonce and all other native response fields.
+func (s *Service) nativeAuthMethodsMiddleware(e *core.RequestEvent) error {
+	if e.Request.Method != http.MethodGet || !strings.HasPrefix(e.Request.URL.Path, "/api/collections/") || !strings.HasSuffix(e.Request.URL.Path, "/auth-methods") {
+		return e.Next()
+	}
+	// The native response contains a fresh PKCE verifier, not public metadata.
+	noStore(e)
+	return s.shopifyAuthMethods(e)
+}
+
 func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	original := e.Response
 	originalRequest := e.Request

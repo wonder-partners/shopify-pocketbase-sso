@@ -90,6 +90,8 @@ Each discovery attempt has a 20-second deadline, with retry delays increasing fr
 
 The native `fields` query parameter on `listAuthMethods()` is applied after Shopify filtering and URL rewriting, including for the legacy `authProviders` response.
 
+PocketBase's native `apis.Gzip()` can be registered before or after `Service.Register`. The auth-methods middleware runs at priority 1 so it rewrites JSON before native compression. Custom compression middleware should run at a lower priority to wrap the rewritten response.
+
 Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
 Deleting a Shopify link, through the records API or a native security purge, also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409.

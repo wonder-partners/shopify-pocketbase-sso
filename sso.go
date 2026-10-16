@@ -122,6 +122,9 @@ func (s *Service) discoverInBackground() {
 // and checks the state returned by listAuthMethods.
 func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
 	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "shopify_oauth2", Func: s.nativeOAuthMiddleware})
+	// PocketBase's native gzip middleware has priority 0. Rewrite its inner
+	// JSON response before compression, independently of registration order.
+	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "shopify_auth_methods", Priority: 1, Func: s.nativeAuthMethodsMiddleware})
 }
 
 func noStore(e *core.RequestEvent) {
