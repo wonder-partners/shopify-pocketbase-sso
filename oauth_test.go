@@ -63,6 +63,52 @@ func TestConfiguredAuthCollection(t *testing.T) {
 	}
 }
 
+func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
+	for _, scenario := range []string{"email_conflict", "identity_storage"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setupCollection(t, "", "members", true)
+			c, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Name = "renamedMembers"
+			if err := f.app.Save(c); err != nil {
+				t.Fatal(err)
+			}
+
+			if scenario == "email_conflict" {
+				native := core.NewRecord(c)
+				native.SetEmail("camille@example.test")
+				native.SetPassword("TestPassword12345")
+				if err := f.app.Save(native); err != nil {
+					t.Fatal(err)
+				}
+				f.loginShop()
+				f.expect(f.completeCallback(f.authorize(false)), 409)
+				for _, collection := range []string{core.CollectionNameExternalAuths, accountsCollectionName} {
+					count, err := f.app.CountRecords(collection)
+					if err != nil || count != 0 {
+						t.Fatal("renamed collection linked a conflicting Shopify identity")
+					}
+				}
+				return
+			}
+
+			first := decodeAuth(t, f.login())
+			userID := first.Record["id"].(string)
+			account := privateAccount(f, userID)
+			if account.GetString("issuer") != f.s.issuer || account.GetString("subject") != "shopify-customer-sub-12345" {
+				t.Fatal("renamed collection did not save the verified Shopify identity")
+			}
+			f.mock.ProfileEmail = "changed@example.test"
+			second := decodeAuth(t, f.login())
+			if second.Record["id"] != userID || second.Record["email"] != f.mock.ProfileEmail || second.Meta["isNew"] != false {
+				t.Fatal("renamed collection lost the Shopify account or profile synchronization")
+			}
+		})
+	}
+}
+
 func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	// A leftover setting from the prototype must not redirect authentication.
 	t.Setenv("STUDIO_AUTH_COLLECTION", "members")

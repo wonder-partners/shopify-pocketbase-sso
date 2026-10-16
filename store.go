@@ -55,10 +55,11 @@ func (s *Service) configureProvider() error {
 		return err
 	}
 	s.collectionID = c.Id
-	s.app.OnRecordAuthWithOAuth2Request(c.Name).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
+	// Collection IDs keep these hooks active when the host renames the collection.
+	s.app.OnRecordAuthWithOAuth2Request(c.Id).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
 		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,
 	})
-	s.app.OnRecordAuthRequest(c.Name).Bind(&hook.Handler[*core.RecordAuthRequestEvent]{
+	s.app.OnRecordAuthRequest(c.Id).Bind(&hook.Handler[*core.RecordAuthRequestEvent]{
 		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
 			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
 			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
