@@ -79,6 +79,9 @@ func (s *Service) configureProvider() error {
 	s.app.OnMailerRecordAuthAlertSend().Bind(&hook.Handler[*core.MailerRecordEvent]{
 		Id: "studio_shopify_auth_alert", Priority: -1000, Func: deferShopifyAuthAlert,
 	})
+	s.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordRequestEvent]{
+		Id: "studio_shopify_unlink", Priority: -1000, Func: s.unlinkShopifyAccount,
+	})
 	return nil
 }
 

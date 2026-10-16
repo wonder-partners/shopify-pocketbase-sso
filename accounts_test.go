@@ -3,6 +3,7 @@ package shopifysso
 import (
 	"database/sql"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -192,5 +193,220 @@ func TestPrivateAccountDeletionCascadesFromUser(t *testing.T) {
 	}
 	if _, err := f.app.FindRecordById(accountsCollectionName, a.Id); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("deleting a user left its private Shopify identity behind")
+	}
+}
+
+func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
+	for _, collection := range []string{"users", "renamedMembers"} {
+		t.Run(collection, func(t *testing.T) {
+			f := setupCollection(t, "", "users", false)
+			if collection != "users" {
+				c, _ := f.app.FindCollectionByNameOrId(f.s.collectionID)
+				c.Name = collection
+				if err := f.app.Save(c); err != nil {
+					t.Fatal(err)
+				}
+				f.s.cfg.AuthCollection = collection
+			}
+			f.login()
+			_, user := f.authRecord()
+			user.SetPassword("TestPassword12345")
+			if err := f.app.Save(user); err != nil {
+				t.Fatal(err)
+			}
+			token, err := user.NewAuthToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			account := privateAccount(f, user.Id)
+			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A historical identity from a different issuer must stay untouched.
+			if err := putAccount(f.app, user.Id, "https://other.example.test/identity", "other-subject", "other-customer"); err != nil {
+				t.Fatal(err)
+			}
+			other, err := f.app.FindFirstRecordByFilter(accountsCollectionName,
+				"issuer = 'https://other.example.test/identity'")
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := f.api.URL + "/api/collections/_externalAuths/records/" + link.Id
+			f.expect(f.request("DELETE", endpoint, "", "", ""), 404)
+			f.expect(f.request("DELETE", endpoint, "", "", token), 204)
+			for _, target := range []struct{ collection, id string }{
+				{core.CollectionNameExternalAuths, link.Id}, {accountsCollectionName, account.Id},
+			} {
+				if _, err := f.app.FindRecordById(target.collection, target.id); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatal("unlink kept an identity link", err)
+				}
+			}
+			if _, err := f.app.FindRecordById(accountsCollectionName, other.Id); err != nil {
+				t.Fatal("unlink removed another issuer's private identity", err)
+			}
+			password := f.request("POST", f.api.URL+"/api/collections/"+collection+"/auth-with-password", "",
+				`{"identity":"camille@example.test","password":"TestPassword12345"}`, "")
+			f.expect(password, 200)
+			if decodeAuth(t, password).Record["id"] != user.Id {
+				t.Fatal("unlink changed the password account")
+			}
+			f.loginShop()
+			f.expect(f.completeCallback(f.authorize(false)), 409)
+			// A new email may create a new account, but cannot recover the old one.
+			f.mock.ProfileEmail = "new-account@example.test"
+			result := decodeAuth(t, f.login())
+			if result.Record["id"] == user.Id || result.Meta["isNew"] != true {
+				t.Fatal("unlinked Shopify identity recovered its previous account")
+			}
+		})
+	}
+}
+
+func TestShopifyUnlinkFailureKeepsBothIdentityLinks(t *testing.T) {
+	for _, stage := range []string{"private_delete", "native_delete", "denied_after", "http_error_after", "stopped"} {
+		t.Run(stage, func(t *testing.T) {
+			f := setup(t, "")
+			f.login()
+			token, user := f.authRecord()
+			account := privateAccount(f, user.Id)
+			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch stage {
+			case "private_delete", "native_delete":
+				collection := accountsCollectionName
+				if stage == "native_delete" {
+					collection = core.CollectionNameExternalAuths
+				}
+				f.app.OnRecordDelete(collection).BindFunc(func(e *core.RecordEvent) error {
+					return errors.New("storage unavailable")
+				})
+			default:
+				f.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).BindFunc(func(e *core.RecordRequestEvent) error {
+					if stage == "stopped" {
+						return e.NoContent(http.StatusNoContent)
+					}
+					if err := e.Next(); err != nil {
+						return err
+					}
+					if stage == "http_error_after" {
+						return e.JSON(http.StatusForbidden, map[string]string{"message": "Unlink denied."})
+					}
+					return e.ForbiddenError("Unlink denied.", nil)
+				})
+			}
+			status := http.StatusForbidden
+			switch stage {
+			case "private_delete":
+				status = http.StatusInternalServerError
+			case "native_delete":
+				status = http.StatusBadRequest
+			case "stopped":
+				status = http.StatusNoContent
+			}
+			f.expect(f.request("DELETE", f.api.URL+"/api/collections/_externalAuths/records/"+link.Id, "", "", token), status)
+			for _, target := range []struct{ collection, id string }{
+				{core.CollectionNameExternalAuths, link.Id}, {accountsCollectionName, account.Id},
+			} {
+				if _, err := f.app.FindRecordById(target.collection, target.id); err != nil {
+					t.Fatal("failed unlink lost an identity link", err)
+				}
+			}
+		})
+	}
+}
+
+func TestShopifyUnlinkLeavesOtherProvidersAndCollectionsUnchanged(t *testing.T) {
+	for _, provider := range []string{"google", providerName} {
+		t.Run(provider, func(t *testing.T) {
+			f := setup(t, "")
+			f.login()
+			token, user := f.authRecord()
+			account := privateAccount(f, user.Id)
+			owner := user
+			if provider == providerName {
+				members := core.NewAuthCollection("members")
+				if err := f.app.Save(members); err != nil {
+					t.Fatal(err)
+				}
+				owner = core.NewRecord(members)
+				owner.SetEmail("other@example.test")
+				owner.SetPassword("TestPassword12345")
+				if err := f.app.Save(owner); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				token, err = owner.NewAuthToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := core.NewExternalAuth(f.app)
+			link.SetCollectionRef(owner.Collection().Id)
+			link.SetRecordRef(owner.Id)
+			link.SetProvider(provider)
+			link.SetProviderId(identityID(account.GetString("issuer"), account.GetString("subject")))
+			if err := f.app.Save(link); err != nil {
+				t.Fatal(err)
+			}
+			endpoint := f.api.URL + "/api/collections/_externalAuths/records/" + link.Id
+			if provider == providerName {
+				f.expect(f.request("DELETE", endpoint, "", "", f.auth.Token), 404)
+			}
+			f.expect(f.request("DELETE", endpoint, "", "", token), 204)
+			if privateAccount(f, user.Id).Id != account.Id {
+				t.Fatal("another OAuth unlink changed the Shopify identity")
+			}
+			if result := decodeAuth(t, f.login()); result.Record["id"] != user.Id {
+				t.Fatal("another OAuth unlink changed the Shopify account")
+			}
+		})
+	}
+}
+
+func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
+	for _, withPrivateIdentity := range []bool{false, true} {
+		name := "missing_private_identity"
+		if withPrivateIdentity {
+			name = "existing_private_identity"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Error(w, "Shopify unavailable", http.StatusServiceUnavailable)
+				})
+			})
+			users, _ := f.app.FindCollectionByNameOrId("users")
+			user := core.NewRecord(users)
+			user.SetEmail("existing@example.test")
+			user.SetPassword("TestPassword12345")
+			if err := f.app.Save(user); err != nil {
+				t.Fatal(err)
+			}
+			issuer, subject := f.shop.URL+"/identity", "previous-shopify-subject"
+			if withPrivateIdentity {
+				if err := putAccount(f.app, user.Id, issuer, subject, "previous-customer"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := core.NewExternalAuth(f.app)
+			link.SetCollectionRef(user.Collection().Id)
+			link.SetRecordRef(user.Id)
+			link.SetProvider(providerName)
+			link.SetProviderId(identityID(issuer, subject))
+			if err := f.app.Save(link); err != nil {
+				t.Fatal(err)
+			}
+			token, err := user.NewAuthToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.expect(f.request("DELETE", f.api.URL+"/api/collections/"+link.Collection().Id+"/records/"+link.Id, "", "", token), 204)
+			if count, err := f.app.CountRecords(accountsCollectionName); err != nil || count != 0 {
+				t.Fatal("unlink during a discovery outage kept a private identity", err)
+			}
+		})
 	}
 }

@@ -4,12 +4,56 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 )
 
 const accountsCollectionName = "_shopifyIdentities"
+
+// Only explicit API deletion unlinks the private identity. PocketBase's internal
+// security purges also delete external auths, but must preserve Shopify identity
+// continuity during verification upgrades and subsequent Shopify logins.
+func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
+	if e.Record.GetString("provider") != providerName || e.Record.GetString("collectionRef") != s.collectionID {
+		return e.Next()
+	}
+	linkID := e.Record.Id
+	user, providerID := e.Record.GetString("recordRef"), e.Record.GetString("providerId")
+	originalApp := e.App
+	defer func() { e.App = originalApp }()
+	return originalApp.RunInTransaction(func(tx core.App) error {
+		e.App = tx
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if e.Status() >= http.StatusBadRequest {
+			return router.NewApiError(e.Status(), "Shopify unlink request was rejected.", nil)
+		}
+		// A host hook may stop the chain without deleting the native link.
+		if _, err := tx.FindRecordById(e.Collection.Id, linkID); err == nil {
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		accounts, err := tx.FindRecordsByFilter(accountsCollectionName, "user = {:user}", "", 0, 0, dbx.Params{"user": user})
+		if err != nil {
+			return err
+		}
+		for _, a := range accounts {
+			// Use persisted identity data so unlink also works during discovery
+			// outages and leaves identities from other issuers untouched.
+			if identityID(a.GetString("issuer"), a.GetString("subject")) == providerID {
+				if err := tx.Delete(a); err != nil {
+					return e.InternalServerError("Unable to unlink the private Shopify identity.", err)
+				}
+			}
+		}
+		return nil
+	})
+}
 
 // The underscore is a naming convention, not an access-control mechanism.
 // Locked API rules protect the records; System groups and protects the schema.
