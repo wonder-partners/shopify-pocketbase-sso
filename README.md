@@ -100,6 +100,8 @@ Verification also invalidates existing PocketBase sessions when a legacy private
 
 Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. The native JSON response is serialized before commit and sent afterwards; a serialization failure rolls back the database changes. Before commit, an authentication rule or request hook rejection also rolls back these changes. A hook that stops the chain without writing an HTTP response causes a rollback and returns HTTP 500. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.
 
+The native MFA response remains pending until the hook chain completes. A project hook that handles `apis.ErrMFA` and writes an error response replaces the challenge entirely, preserving its status, headers and body while rolling back the profile, links and MFA challenge.
+
 For Shopify logins, native new-device email alerts and their mail hooks run asynchronously after a successful commit. Slow mail delivery holds neither the database transaction nor the login response. A rollback discards the alert; delivery failures are logged without rejecting the login. Other auth methods keep PocketBase's normal alert behavior.
 
 Project hooks may nest `e.App.RunInTransaction` calls using the callback's app for subsequent hooks. Shopify response tracking and deferred alerts remain attached to the same authentication transaction.

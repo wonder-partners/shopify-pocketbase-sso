@@ -245,6 +245,76 @@ func TestShopifyDenialAfterMFAIsRolledBack(t *testing.T) {
 	}
 }
 
+func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
+	for _, stage := range []string{"auth", "oauth", "auth_outer", "oauth_outer"} {
+		for _, responseType := range []string{"json", "empty", "unauthorized"} {
+			t.Run(stage+"/"+responseType, func(t *testing.T) {
+				f := setup(t, "")
+				c, _ := f.app.FindCollectionByNameOrId("users")
+				c.MFA.Enabled, c.OTP.Enabled = true, true
+				if err := f.app.Save(c); err != nil {
+					t.Fatal(err)
+				}
+				status := http.StatusForbidden
+				if responseType == "unauthorized" {
+					status = http.StatusUnauthorized
+				}
+				deny := func(e *core.RequestEvent, next func() error) error {
+					if err := next(); err != apis.ErrMFA {
+						t.Fatal("expected the native MFA signal", err)
+					}
+					e.Response.Header().Set("X-Project-Policy", "denied")
+					if responseType == "empty" {
+						return e.NoContent(status)
+					}
+					return e.JSON(status, map[string]string{"message": "Denied by project policy."})
+				}
+				if strings.HasPrefix(stage, "auth") {
+					f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+						return deny(e.RequestEvent, e.Next)
+					})
+				} else {
+					f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
+						return deny(e.RequestEvent, e.Next)
+					})
+				}
+				serverURL := ""
+				if strings.HasSuffix(stage, "_outer") {
+					serverURL = projectTransactionServer(t, f, "success")
+				}
+				f.loginShop()
+				callback := f.authorize(false)
+				var result response
+				if serverURL == "" {
+					result = f.completeCallback(callback)
+				} else {
+					data := callbackData(t, f.callback(callback).body)
+					result = f.request("POST", serverURL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), "")
+				}
+				f.expect(result, status)
+				if strings.Contains(result.body, "mfaId") || result.headers.Get("X-Project-Policy") != "denied" {
+					t.Fatal("MFA response replaced the final policy response")
+				}
+				if responseType == "empty" {
+					if result.body != "" {
+						t.Fatal("empty policy response retained the MFA challenge")
+					}
+				} else {
+					var body map[string]string
+					if err := json.Unmarshal([]byte(result.body), &body); err != nil || len(body) != 1 || body["message"] != "Denied by project policy." {
+						t.Fatal("policy response was not a single intact JSON document", err)
+					}
+				}
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
+						t.Fatal("HTTP denial after MFA persisted records in", collection, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestShopifyCommitFailureDoesNotExposeAuthResponse(t *testing.T) {
 	for _, mfa := range []bool{false, true} {
 		name := "session"

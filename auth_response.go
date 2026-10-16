@@ -40,12 +40,9 @@ func (tx *shopifyAuthTransaction) OnRecordAuthRequest(tags ...string) *hook.Tagg
 			e.Response = prepared
 			defer func() { e.App, e.Response = originalApp, originalResponse }()
 			err := finalizer.Next()
-			if err == apis.ErrMFA && prepared.Written() {
-				// PocketBase exposes an MFA challenge eagerly to surrounding hooks.
-				if writeErr := prepared.sendTo(originalResponse); writeErr != nil {
-					return errors.Join(err, writeErr)
-				}
-			} else if err == nil && prepared.Written() {
+			if (err == nil || err == apis.ErrMFA) && prepared.Written() {
+				// Keep the MFA challenge pending too. A surrounding hook can
+				// replace it with its final policy response after calling Next.
 				tx.preparedResponse = prepared
 			}
 			return err
