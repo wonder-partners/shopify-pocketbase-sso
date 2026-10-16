@@ -82,7 +82,7 @@ func main() {
 | `AuthCollection` | Existing auth collection name or ID, defaults to `users` |
 | `AllowLoopbackHTTP` | Allows loopback HTTP for tests, disabled by default |
 
-The host project owns its fields and rules. The library enables the `shopify` provider and creates the private `_shopifyIdentities` collection. The auth collection's create rule determines whether a first login can create an account.
+The host project owns its fields and rules. The library enables the `shopify` provider and creates the private `_shopifyIdentities` collection. Provider configuration reads and updates the auth collection in one transaction to preserve concurrent host changes. The auth collection's create rule determines whether a first login can create an account.
 
 `New` validates local configuration and database setup synchronously, then discovers Shopify's endpoints in the background. A discovery outage does not prevent PocketBase from starting. Until discovery succeeds, `listAuthMethods()` omits Shopify while preserving other auth methods, and explicit Shopify login requests return HTTP 503 with `Retry-After`.
 

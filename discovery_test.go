@@ -3,14 +3,17 @@ package shopifysso
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/types"
 )
 
 func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
@@ -176,5 +179,116 @@ func TestLocalSetupErrorsFailWithoutDiscovery(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), "discovery") {
 			t.Fatalf("invalid local collection %s did not fail locally", collection)
 		}
+	}
+}
+
+func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T) {
+	f := setup(t, "")
+	writer := f.app.NonconcurrentDB().(*dbx.DB).DB()
+	configured := make(chan error, 1)
+	var started bool
+	err := f.app.RunInTransaction(func(tx core.App) error {
+		c, err := tx.FindCollectionByNameOrId(f.s.collectionID)
+		if err != nil {
+			return err
+		}
+		c.Name = "renamedUsers"
+		c.MFA.Enabled, c.OTP.Enabled = true, true
+		c.PasswordAuth.Enabled = false
+		c.AuthRule = types.Pointer("verified = true")
+		c.OAuth2.Providers = append(c.OAuth2.Providers, core.OAuth2ProviderConfig{
+			Name: "google", ClientId: "host-client", ClientSecret: "host-secret",
+		})
+		if err := tx.Save(c); err != nil {
+			return err
+		}
+		waits := writer.Stats().WaitCount
+		started = true
+		go func() { configured <- f.s.configureProvider() }()
+		// Wait until configuration needs the occupied writer connection.
+		// A read outside its transaction would already have loaded stale data.
+		deadline := time.NewTimer(2 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(time.Millisecond)
+		defer tick.Stop()
+		for writer.Stats().WaitCount == waits {
+			select {
+			case <-tick.C:
+			case <-deadline.C:
+				return errors.New("provider configuration did not wait for the host transaction")
+			}
+		}
+		return nil // Commit the host changes before configuration continues.
+	})
+	if started {
+		select {
+		case configureErr := <-configured:
+			if configureErr != nil {
+				t.Fatal(configureErr)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("provider configuration did not finish")
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Name != "renamedUsers" || !c.MFA.Enabled || !c.OTP.Enabled || c.PasswordAuth.Enabled || c.AuthRule == nil || *c.AuthRule != "verified = true" {
+		t.Fatal("provider configuration overwrote concurrent host authentication settings")
+	}
+	google, ok := c.OAuth2.GetProviderConfig("google")
+	if !ok || google.ClientId != "host-client" || google.ClientSecret != "host-secret" {
+		t.Fatal("provider configuration overwrote another OAuth provider")
+	}
+	shopify, ok := c.OAuth2.GetProviderConfig(providerName)
+	if !ok || shopify.AuthURL != f.s.oauth.Endpoint.AuthURL || shopify.TokenURL != f.s.oauth.Endpoint.TokenURL {
+		t.Fatal("Shopify provider configuration was not saved")
+	}
+}
+
+func TestProviderConfigurationRollsBackOnSaveHookFailure(t *testing.T) {
+	f := setup(t, "")
+	before, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _ := before.OAuth2.GetProviderConfig(providerName)
+	f.s.cfg.ClientID = "replacement-client"
+	fail := true
+	f.app.OnCollectionUpdate(f.s.collectionID).BindFunc(func(e *core.CollectionEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if fail {
+			return errors.New("host rejected the provider update")
+		}
+		return nil
+	})
+	if err := f.s.configureProvider(); err == nil {
+		t.Fatal("provider configuration ignored the host save hook failure")
+	}
+	after, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := after.OAuth2.GetProviderConfig(providerName)
+	if !ok || provider.ClientId != original.ClientId {
+		t.Fatal("failed provider configuration persisted a partial update")
+	}
+	fail = false
+	if err := f.s.configureProvider(); err != nil {
+		t.Fatal("provider configuration did not recover on retry", err)
+	}
+	after, err = f.app.FindCollectionByNameOrId(f.s.collectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, ok = after.OAuth2.GetProviderConfig(providerName)
+	if !ok || provider.ClientId != f.s.cfg.ClientID {
+		t.Fatal("provider configuration retry did not persist its update")
 	}
 }

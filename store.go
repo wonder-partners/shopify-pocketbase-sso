@@ -33,29 +33,36 @@ func (s *Service) configureProvider() error {
 	if collection == "" {
 		collection = s.cfg.AuthCollection
 	}
-	c, err := s.app.FindCollectionByNameOrId(collection)
-	if err != nil {
-		return err
-	}
-	// PocketBase v0.40.5 requires a non-empty config field even for public
-	// clients. This public marker is never used by the provider's exchange.
-	config := core.OAuth2ProviderConfig{
-		Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: "public-pkce-no-secret",
-		AuthURL: s.oauth.Endpoint.AuthURL, TokenURL: s.oauth.Endpoint.TokenURL,
-		DisplayName: "Shopify", PKCE: types.Pointer(true),
-	}
-	replaced := false
-	for i := range c.OAuth2.Providers {
-		if c.OAuth2.Providers[i].Name == providerName {
-			c.OAuth2.Providers[i] = config
-			replaced = true
+	var c *core.Collection
+	// Read through the same transaction that saves the provider, so a host
+	// update cannot commit between our read and the collection replacement.
+	err := s.app.RunInTransaction(func(tx core.App) error {
+		var err error
+		c, err = tx.FindCollectionByNameOrId(collection)
+		if err != nil {
+			return err
 		}
-	}
-	if !replaced {
-		c.OAuth2.Providers = append(c.OAuth2.Providers, config)
-	}
-	c.OAuth2.Enabled = true
-	if err := s.app.Save(c); err != nil {
+		// PocketBase v0.40.5 requires a non-empty config field even for public
+		// clients. This public marker is never used by the provider's exchange.
+		config := core.OAuth2ProviderConfig{
+			Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: "public-pkce-no-secret",
+			AuthURL: s.oauth.Endpoint.AuthURL, TokenURL: s.oauth.Endpoint.TokenURL,
+			DisplayName: "Shopify", PKCE: types.Pointer(true),
+		}
+		replaced := false
+		for i := range c.OAuth2.Providers {
+			if c.OAuth2.Providers[i].Name == providerName {
+				c.OAuth2.Providers[i] = config
+				replaced = true
+			}
+		}
+		if !replaced {
+			c.OAuth2.Providers = append(c.OAuth2.Providers, config)
+		}
+		c.OAuth2.Enabled = true
+		return tx.Save(c)
+	})
+	if err != nil {
 		return err
 	}
 	if s.collectionID == "" {
