@@ -35,14 +35,10 @@ func (s *Service) configureProvider() error {
 	if err != nil {
 		return err
 	}
-	secret := s.cfg.ClientSecret
-	if secret == "" {
-		// PocketBase v0.40.5 requires a non-empty config field even for public
-		// clients. This public marker is never used by the provider's exchange.
-		secret = "public-pkce-no-secret"
-	}
+	// PocketBase v0.40.5 requires a non-empty config field even for public
+	// clients. This public marker is never used by the provider's exchange.
 	config := core.OAuth2ProviderConfig{
-		Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: secret,
+		Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: "public-pkce-no-secret",
 		AuthURL: s.oauth.Endpoint.AuthURL, TokenURL: s.oauth.Endpoint.TokenURL,
 		DisplayName: "Shopify", PKCE: types.Pointer(true),
 	}

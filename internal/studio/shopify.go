@@ -21,8 +21,7 @@ type Config struct {
 	ShopURL           string
 	RedirectURL       string // Full callback URL chosen and served by the host frontend.
 	ClientID          string
-	ClientSecret      string // Optional: leave empty for a public client with PKCE.
-	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
+	AllowLoopbackHTTP bool // Only for the local mock and automated tests.
 }
 
 type discovery struct {
@@ -108,15 +107,11 @@ func (s *Service) discover(ctx context.Context) error {
 		return err
 	}
 	s.issuer, s.graphql = d.Issuer, api.GraphQL
-	style := oauth2.AuthStyleInParams
-	if s.cfg.ClientSecret != "" {
-		style = oauth2.AuthStyleInHeader
-	}
 	s.oauth = oauth2.Config{
-		ClientID: s.cfg.ClientID, ClientSecret: s.cfg.ClientSecret,
+		ClientID:    s.cfg.ClientID,
 		RedirectURL: s.cfg.RedirectURL,
 		Scopes:      []string{"openid", "email", "customer-account-api:full"},
-		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: style},
+		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
 	}
 	keyCtx := oidc.ClientContext(context.Background(), s.client)
 	s.verifier = oidc.NewVerifier(d.Issuer, shopifySubjectKeySet{oidc.NewRemoteKeySet(keyCtx, d.JWKSURL)}, &oidc.Config{

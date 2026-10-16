@@ -60,7 +60,7 @@ func createDocument(f *fixture, token, owner string) string {
 }
 
 func TestShopifyAndBuiltInAccountsUseTheSameAPIRules(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	documentsCollection(f)
 	f.login()
 	shopToken, shopUser := f.authRecord()
@@ -110,7 +110,7 @@ func TestShopifyAndBuiltInAccountsUseTheSameAPIRules(t *testing.T) {
 
 func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 	for _, denyAfterNext := range []bool{false, true} {
-		f := setup(t, "", "")
+		f := setup(t, "")
 		called := 0
 		f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
 			called++
@@ -128,7 +128,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 			t.Fatal("auth hook was bypassed or a denied token escaped")
 		}
 	}
-	f := setup(t, "", "email")
+	f := setup(t, "email")
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	c.AuthRule = types.Pointer("verified = true")
 	if err := f.app.Save(c); err != nil {
@@ -139,7 +139,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 }
 
 func TestNativeMFAIsRequiredBeforeIssuingAShopifySession(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	_, user := f.authRecord()
 	user.SetPassword("TestPassword12345")
@@ -169,7 +169,7 @@ func TestNativeMFAIsRequiredBeforeIssuingAShopifySession(t *testing.T) {
 }
 
 func TestCreateRuleCanDisableShopifySignup(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	c.CreateRule = nil
 	if err := f.app.Save(c); err != nil {
@@ -184,7 +184,7 @@ func TestCreateRuleCanDisableShopifySignup(t *testing.T) {
 }
 
 func TestExistingAuthCollectionPoliciesArePreserved(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	c.AuthToken.Duration = 1200
 	c.UpdateRule = types.Pointer("id = @request.auth.id && verified = true")
@@ -203,7 +203,7 @@ func TestExistingAuthCollectionPoliciesArePreserved(t *testing.T) {
 }
 
 func TestShopifyDoesNotClaimAnExistingPasswordAccountByEmail(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	native := nativeSignup(f, "camille@example.test")
 	f.loginShop()
 	f.expect(f.completeCallback(f.authorize(true)), 409)
@@ -215,7 +215,7 @@ func TestShopifyDoesNotClaimAnExistingPasswordAccountByEmail(t *testing.T) {
 }
 
 func TestNativeAuthEnrichmentAndModifiedTokenAreHonored(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	modifiedToken := ""
 	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
 		if e.AuthMethod == core.MFAMethodOAuth2 {

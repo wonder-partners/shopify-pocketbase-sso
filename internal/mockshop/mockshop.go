@@ -23,20 +23,20 @@ const Email = "camille@example.test"
 
 type authorization struct{ Challenge, Nonce string }
 type Mock struct {
-	BaseURL, Callback, Secret, Fault string
-	ProfileEmail, Subject            string // Optional fixture overrides, never used against Shopify.
-	key                              *rsa.PrivateKey
-	mu                               sync.Mutex
-	codes                            map[string]authorization
-	access                           map[string]bool
+	BaseURL, Callback, Fault string
+	ProfileEmail, Subject    string // Optional fixture overrides, never used against Shopify.
+	key                      *rsa.PrivateKey
+	mu                       sync.Mutex
+	codes                    map[string]authorization
+	access                   map[string]bool
 }
 
-func New(base, callback, secret, fault string) (*Mock, error) {
+func New(base, callback, fault string) (*Mock, error) {
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
 	}
-	return &Mock{BaseURL: base, Callback: callback, Secret: secret, Fault: fault, key: k,
+	return &Mock{BaseURL: base, Callback: callback, Fault: fault, key: k,
 		codes: map[string]authorization{}, access: map[string]bool{}}, nil
 }
 
@@ -140,17 +140,9 @@ func (m *Mock) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := r.Form.Get("client_id")
-	if m.Secret == "" && (r.Form.Get("client_secret") != "" || r.Header.Get("Authorization") != "") {
+	if r.Form.Has("client_secret") || r.Header.Get("Authorization") != "" {
 		http.Error(w, "public clients must not send a secret", 400)
 		return
-	}
-	if m.Secret != "" {
-		id, secret, ok := r.BasicAuth()
-		if !ok || secret != m.Secret {
-			http.Error(w, "invalid client secret", 401)
-			return
-		}
-		client = id
 	}
 	if client != ClientID || r.Form.Get("redirect_uri") != m.Callback || r.Form.Get("grant_type") != "authorization_code" {
 		http.Error(w, "invalid client", 401)

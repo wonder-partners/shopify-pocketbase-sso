@@ -101,7 +101,7 @@ La voie avec notre propre app permet d'enregistrer le client sans installer Head
 5. Dans le projet d'app CLI, reprendre les champs de `shopify.app.example.toml`, y renseigner le Client ID et l'URL HTTPS. Pour ce projet, le fichier actif est `shopify-app/studio-sso/shopify.app.toml`. Le scope d'installation est `customer_read_customers`. Le callback client va dans `[customer_authentication].redirect_uris`.
 6. Avec Shopify CLI, lier la configuration à l'app puis la déployer avec `shopify app deploy`. Ce déploiement enregistre la configuration Shopify, il n'héberge pas le serveur Go. La configuration peut aussi être saisie dans l'interface du Dev Dashboard si les champs correspondants sont disponibles. Le CLI ne suffit pas sans connexion au compte autorisé à gérer l'app.
 7. Sur une dev store, `shopify app dev --path ./shopify-app/studio-sso --store example-store.myshopify.com --no-update` prépare l'installation et le preview. Dans le test effectué, la CLI a accordé automatiquement le scope. Pour une installation hors de ce mode de développement, utiliser **Install app** depuis la fiche de l'app et approuver les permissions demandées. Si la version change après l'installation, approuver les nouvelles permissions si Shopify le demande.
-8. Configurer `SHOPIFY_CUSTOMER_CLIENT_ID` avec ce Client ID et laisser `SHOPIFY_CUSTOMER_CLIENT_SECRET` vide.
+8. Configurer `SHOPIFY_CUSTOMER_CLIENT_ID` avec ce Client ID. Aucun secret client n'est nécessaire.
 
 La création et l'installation de l'app suivent le [guide du Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard/create-apps-using-dev-dashboard). Les paramètres d'authentification marchand dans `[auth]` et ceux du client dans `[customer_authentication]` ont des rôles distincts. Le prototype n'a pas besoin d'un jeton Admin API pour lire le profil du client connecté.
 
@@ -115,8 +115,8 @@ Si le canal est disponible sur la boutique et que l'on préfère gérer un clien
 2. Installer le canal officiel [Headless](https://apps.shopify.com/headless).
 3. Dans Headless, créer un storefront nommé `Studio`.
 4. Ouvrir ses paramètres **Customer Account API**.
-5. Choisir un client **Confidential** si cette option est disponible pour le backend Go. Un client public avec PKCE fonctionne aussi dans ce prototype.
-6. Relever le **Client ID Customer Account API** et, pour un client confidential, son secret. Dans cette voie Headless, utiliser les identifiants affichés dans les paramètres du storefront.
+5. Le prototype avait aussi exploré les clients confidential. Ce support a été supprimé le 16 octobre 2026 ; seul le client public PKCE est conservé.
+6. Relever le **Client ID Customer Account API**. Dans cette voie Headless historique, utiliser l'identifiant affiché dans les paramètres du storefront.
 7. Autoriser la lecture des informations du client nécessaires au studio. Le prototype demande uniquement identifiant, prénom, nom et e-mail dans sa requête.
 8. Enregistrer exactement le callback HTTPS décrit ci-dessous. Pour un client public web, enregistrer également l'origine JavaScript correspondante dans Shopify.
 
@@ -142,7 +142,6 @@ cd D:/Workspaces/shopify-pocketbase-sso
 $env:SHOPIFY_SHOP_URL = 'http://127.0.0.1:8091'
 $env:STUDIO_URL = 'http://127.0.0.1:8090'
 $env:SHOPIFY_CUSTOMER_CLIENT_ID = 'demo-client'
-$env:SHOPIFY_CUSTOMER_CLIENT_SECRET = ''
 $env:SSO_ALLOW_LOOPBACK_HTTP = '1'
 go run . serve --http=127.0.0.1:8090
 ```
@@ -180,7 +179,7 @@ Origine JavaScript, si client public web : https://exemple.trycloudflare.com
 
 Pour la voie app, les requêtes d'échange sont faites par le backend Go. Le champ `javascript_origins` n'est pas nécessaire à ce prototype.
 
-5. Copier `config.example.ps1` vers `config.local.ps1`, puis renseigner le domaine de la boutique, l'URL HTTPS et le Client ID. Pour la voie app, garder le secret vide. Pour un client Headless confidential, utiliser la ligne `Read-Host` fournie pour saisir son secret sans le placer dans l'historique.
+5. Le prototype utilisait `config.example.ps1` et `config.local.ps1` pour le domaine de boutique, l'URL HTTPS et le Client ID. Ces scripts ont été remplacés par `mise.toml`. Aucun secret client n'est à configurer.
 6. Charger la configuration et démarrer PocketBase :
 
 ```powershell
@@ -240,7 +239,7 @@ Ces paramètres proviennent du callback vérifié côté serveur, pas de valeurs
 
 `authWithOAuth2Code` convient au parcours de navigation de premier niveau déjà retenu. La variante `authWithOAuth2` avec popup dépend d'une connexion realtime pendant l'authentification et n'est pas utilisée ici. Le fournisseur exige un code préparé par notre callback et lié au même navigateur ; un appel direct avec un code non préparé est refusé. Le SDK utilise son mécanisme standard d'enregistrement de la réponse dans l'auth store. [Référence du SDK](https://github.com/pocketbase/js-sdk#recordservice), [interface des fournisseurs Go](https://pkg.go.dev/github.com/pocketbase/pocketbase@v0.40.5/tools/auth#Provider).
 
-Le client public Shopify n'a toujours aucun secret. PocketBase `0.40.5` impose toutefois un champ `clientSecret` non vide dans la configuration d'un fournisseur. Le code y inscrit le marqueur public `public-pkce-no-secret`. Ce n'est pas un secret et le fournisseur ne le transmet jamais à Shopify : il utilise le client PKCE configuré côté serveur. Les tests du fournisseur simulé refusent expressément tout secret ou en-tête Basic dans ce mode. Les identifiants d'un éventuel client confidential restent, eux aussi, pilotés par la configuration serveur.
+Le client public Shopify n'a aucun secret. PocketBase `0.40.5` impose toutefois un champ `clientSecret` non vide dans la configuration d'un fournisseur. Le code y inscrit le marqueur public `public-pkce-no-secret`. Ce n'est pas un secret et le fournisseur ne le transmet jamais à Shopify : il utilise le client PKCE configuré côté serveur. Les tests du fournisseur simulé refusent expressément tout paramètre de secret client ou en-tête Basic. Le support exploratoire du mode confidential a été supprimé le 16 octobre 2026.
 
 ### Session et SDK officiel
 
@@ -306,4 +305,4 @@ Vérifier les cas suivants avec les mêmes domaines et le forfait non-Plus chois
 - Déconnexion studio, changement de client dans Shopify et session studio déjà ouverte : comportement conforme aux limites décrites ci-dessus.
 - Chrome et Safari, puis un téléphone, pour vérifier les cookies et redirections dans les navigateurs réellement utilisés.
 
-Les éléments nécessaires à ce test sont le domaine public de la dev store, le Client ID de l'app ou du client Headless retenu, une URL HTTPS enregistrée et un compte client de test. Le secret n'est requis que pour la voie Headless confidential. Tout secret et le code reçu par e-mail doivent rester dans la configuration locale ou être saisis par le propriétaire du compte.
+Les éléments nécessaires à ce test sont le domaine public de la dev store, le Client ID retenu, une URL HTTPS enregistrée et un compte client de test. Aucun secret client n'est nécessaire pour le parcours public PKCE conservé. Le code reçu par e-mail doit être saisi par le propriétaire du compte.

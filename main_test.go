@@ -29,7 +29,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 	shop := httptest.NewUnstartedServer(nil)
 	apiURL := "http://" + api.Listener.Addr().String()
 	shopURL := "http://" + shop.Listener.Addr().String()
-	mock, err := mockshop.New(shopURL, apiURL+"/auth/callback", "", "numeric:")
+	mock, err := mockshop.New(shopURL, apiURL+"/auth/callback", "numeric:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestFrontendMatchesREADMEAndPinnedSDK(t *testing.T) {
 
 func TestFrontendWithOfficialSDK(t *testing.T) {
 	if os.Getenv("RUN_JS_SDK_TEST") != "1" {
-		t.Skip("set RUN_JS_SDK_TEST=1 after npm ci --prefix integration")
+		t.Skip("run mise run test to include the official JS SDK integrations")
 	}
 	apiURL, shopURL, _ := frontendFixture(t)
 	input, _ := json.Marshal(map[string]string{"url": apiURL, "shopURL": shopURL})

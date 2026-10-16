@@ -4,5 +4,6 @@
 /bin/
 /coverage.out
 /config.local.ps1
+/mise.local.toml
 /.env
 /integration/node_modules/

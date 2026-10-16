@@ -25,7 +25,7 @@ func nativeOAuthBody(t *testing.T, data map[string]string) string {
 func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	// A leftover setting from the prototype must not redirect authentication.
 	t.Setenv("STUDIO_AUTH_COLLECTION", "members")
-	f := setup(t, "", "")
+	f := setup(t, "")
 	members := core.NewAuthCollection("members")
 	if err := f.app.Save(members); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 }
 
 func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
-	f := setup(t, "", "numeric:")
+	f := setup(t, "numeric:")
 	oauthCalls, createCalls := 0, 0
 	f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
 		oauthCalls++
@@ -110,7 +110,7 @@ func mustJSON(t *testing.T, data any) []byte {
 func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 	for _, stage := range []string{"oauth_before", "oauth_after", "create_before", "create_after"} {
 		t.Run(stage, func(t *testing.T) {
-			f := setup(t, "", "")
+			f := setup(t, "")
 			if strings.HasPrefix(stage, "oauth") {
 				f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
 					if stage == "oauth_after" {
@@ -147,7 +147,7 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 }
 
 func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	cb := f.authorize(false)
 	endpoint := f.api.URL + "/api/collections/users/auth-with-oauth2"
@@ -172,7 +172,7 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 	for _, fault := range []string{"code_expired", "missing", "short", "long", "characters", "wrong"} {
 		t.Run(fault, func(t *testing.T) {
-			f := setup(t, "", "")
+			f := setup(t, "")
 			f.loginShop()
 			page := f.callback(f.authorize(false))
 			f.expect(page, 200)
@@ -200,7 +200,7 @@ func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 }
 
 func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	first, second := f.start(false), f.start(false)
 	a, _ := url.Parse(first.location)
 	b, _ := url.Parse(second.location)
@@ -219,7 +219,7 @@ func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
 }
 
 func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	start := f.start(false)
 	u, _ := url.Parse(start.location)
@@ -238,7 +238,7 @@ func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 }
 
 func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	native := nativeSignup(f, "unrelated@example.test")
 	f.loginShop()
 	page := f.callback(f.authorize(false))
@@ -251,7 +251,7 @@ func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 }
 
 func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	documentsCollection(f)
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	legacy := core.NewRecord(c)
@@ -297,7 +297,7 @@ func TestShopifyProviderRegistrationAndIdentityNamespace(t *testing.T) {
 }
 
 func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	c.OAuth2.Providers = append(c.OAuth2.Providers, core.OAuth2ProviderConfig{Name: "google", ClientId: "test-client", ClientSecret: "test-secret"})
 	c.AuthToken.Duration = 1200
@@ -320,7 +320,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 }
 
 func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T) {
-	f := setup(t, "", "email") // The verified claim does not match the profile email.
+	f := setup(t, "email") // The verified claim does not match the profile email.
 	f.loginShop()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)

@@ -43,12 +43,12 @@ type browserFlow struct {
 	Expires      time.Time
 }
 
-func setup(t *testing.T, secret, fault string) *fixture {
+func setup(t *testing.T, fault string) *fixture {
 	t.Helper()
 	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
 	studioURL := "http://" + f.api.Listener.Addr().String()
 	shopURL := "http://" + f.shop.Listener.Addr().String()
-	m, err := mockshop.New(shopURL, studioURL+"/oauth/callback", secret, fault)
+	m, err := mockshop.New(shopURL, studioURL+"/oauth/callback", fault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func setup(t *testing.T, secret, fault string) *fixture {
 	if err := f.app.Save(users); err != nil {
 		t.Fatal(err)
 	}
-	f.s, err = New(context.Background(), f.app, Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, ClientSecret: secret, AllowLoopbackHTTP: true})
+	f.s, err = New(context.Background(), f.app, Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, AllowLoopbackHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,33 +265,25 @@ func (f *fixture) authRecord() (string, *core.Record) {
 }
 
 func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
-	for _, secret := range []string{"", "demo-secret"} {
-		name := "public_PKCE"
-		if secret != "" {
-			name = "confidential_basic_auth"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := setup(t, secret, "")
-			callback := f.login()
-			if decodeAuth(t, callback).Token == "" {
-				t.Fatal("missing native OAuth response")
-			}
-			token, record := f.authRecord()
-			if record.Email() != mockshop.Email || !record.Verified() {
-				t.Fatalf("wrong profile: %v", record.PublicExport())
-			}
-			if strings.Contains(callback.location, token) {
-				t.Fatal("token leaked to URL")
-			}
-			// Use the issued token against the actual PocketBase CRUD API.
-			r := f.request("GET", f.api.URL+"/api/collections/"+collectionName+"/records/"+record.Id, "", "", token)
-			f.expect(r, 200)
-		})
+	f := setup(t, "")
+	callback := f.login()
+	if decodeAuth(t, callback).Token == "" {
+		t.Fatal("missing native OAuth response")
 	}
+	token, record := f.authRecord()
+	if record.Email() != mockshop.Email || !record.Verified() {
+		t.Fatalf("wrong profile: %v", record.PublicExport())
+	}
+	if strings.Contains(callback.location, token) {
+		t.Fatal("token leaked to URL")
+	}
+	// Use the issued token against the actual PocketBase CRUD API.
+	r := f.request("GET", f.api.URL+"/api/collections/"+collectionName+"/records/"+record.Id, "", "", token)
+	f.expect(r, 200)
 }
 
 func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	cb := f.authorize(true)
 	if !strings.Contains(cb, "error=login_required") {
 		t.Fatal(cb)
@@ -316,7 +308,7 @@ func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 }
 
 func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.expect(f.callback(f.api.URL+"/oauth/callback?state=forged&code=fake"), 400)
 	f.loginShop()
 	cb := f.authorize(true)
@@ -338,7 +330,7 @@ func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
 func TestInvalidIdentityTokensRejected(t *testing.T) {
 	for _, fault := range []string{"nonce", "nonce_missing", "at_hash", "audience", "issuer", "expired", "signature"} {
 		t.Run(fault, func(t *testing.T) {
-			f := setup(t, "", fault)
+			f := setup(t, fault)
 			f.loginShop()
 			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
@@ -352,7 +344,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 		{"numeric:", "900719925474099312345"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
-			f := setup(t, "", tc.fault)
+			f := setup(t, tc.fault)
 			f.login()
 			_, record := f.authRecord()
 			if privateAccount(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
@@ -365,7 +357,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
 	for _, fault := range []string{"signature", "algorithm", "issuer", "audience", "expired", "nonce", "nonce_missing", "at_hash", "not_before"} {
 		t.Run(fault, func(t *testing.T) {
-			f := setup(t, "", "numeric:"+fault)
+			f := setup(t, "numeric:"+fault)
 			f.loginShop()
 			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
@@ -430,7 +422,7 @@ func TestRealVerifierErrorsReceiveSafeDiagnostics(t *testing.T) {
 		{"not_before", "not_yet_valid"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
-			f := setup(t, "", tc.fault)
+			f := setup(t, tc.fault)
 			f.loginShop()
 			cb := f.authorize(true)
 			r := f.completeCallback(cb)
@@ -491,14 +483,14 @@ func TestIDTokenClaimTypeDiagnosticsNeverReturnValues(t *testing.T) {
 }
 
 func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
-	f := setup(t, "", "graphql")
+	f := setup(t, "graphql")
 	f.loginShop()
 	cb := f.authorize(true)
 	f.expect(f.completeCallback(cb), 502)
 }
 
 func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	c, _ := f.app.FindCollectionByNameOrId("users")
 	if c.Fields.GetByName("first_name") != nil || c.Fields.GetByName("last_name") != nil {
 		t.Fatal("Shopify integration added unwanted name fields")
@@ -528,7 +520,7 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 }
 
 func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	_, r := f.authRecord()
 	account := privateAccount(f, r.Id)
@@ -547,7 +539,7 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 }
 
 func TestEmailVerificationRequiresMatchingClaim(t *testing.T) {
-	f := setup(t, "", "email")
+	f := setup(t, "email")
 	f.login()
 	_, r := f.authRecord()
 	if r.Verified() {
@@ -556,7 +548,7 @@ func TestEmailVerificationRequiresMatchingClaim(t *testing.T) {
 }
 
 func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	token, r := f.authRecord()
 	refresh := f.request("POST", f.api.URL+"/api/collections/"+collectionName+"/auth-refresh", "", "", token)
@@ -577,7 +569,7 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 }
 
 func TestOriginsAreCheckedBeforeCompletingTheFlow(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	cb := f.authorize(false)
 	page := f.callback(cb)
@@ -589,7 +581,7 @@ func TestOriginsAreCheckedBeforeCompletingTheFlow(t *testing.T) {
 }
 
 func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	for _, path := range []string{"/studio", "/studio/auth", "/studio/callback", "/studio/client.js", "/studio/callback.js", "/studio/pocketbase.es.mjs"} {
 		f.expect(f.request("GET", f.api.URL+path, "", "", ""), 404)
 	}
@@ -604,7 +596,7 @@ func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
 }
 
 func TestFrontendExpiresLoginParameters(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	cb := f.authorize(true)
 	for k, p := range f.flows {
@@ -629,7 +621,7 @@ func TestProductionURLRequirements(t *testing.T) {
 }
 
 func TestPKCETamperingRejected(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	start := f.start(true)
 	u, _ := url.Parse(start.location)
@@ -644,7 +636,7 @@ func TestPKCETamperingRejected(t *testing.T) {
 // PocketBase already has an OIDC provider. Verify its compatibility separately
 // and show why profile enrichment still needs the Shopify GraphQL API.
 func TestNativePocketBaseOIDCProvider(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.loginShop()
 	p := auth.NewOIDCProvider()
 	p.SetContext(context.Background())

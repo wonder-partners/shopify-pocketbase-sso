@@ -26,7 +26,7 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Scénario | Résultat |
 | --- | --- |
 | Session boutique existante, client public avec PKCE | Passe |
-| Session boutique existante, client confidential avec HTTP Basic | Passe |
+| Session boutique existante, ancien client confidential avec HTTP Basic | Test historique, mode supprimé le 16 octobre 2026 |
 | Visiteur anonyme, lien de connexion, puis parcours interactif | Passe |
 | State invalide, cookie absent, autre navigateur et rejeu du callback | Rejetés |
 | Mauvais nonce, audience ou émetteur du jeton d'identité | Rejetés |
@@ -91,7 +91,7 @@ Les tests Node exécutent réellement le SDK officiel PocketBase `0.28.1` contre
 | Renommage `_shopifyAccounts` vers `_shopifyIdentities`, et opération inverse | Même collection, enregistrements, identifiants exacts, relations et index d'unicité |
 | Renommage avec les deux noms présents, une source publique ou du mauvais type | Refus sans suppression ni fusion |
 
-Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE et, lorsque configuré, le secret du client confidential. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
+Les tests utilisent des serveurs HTTP réels sur des ports locaux aléatoires, une clé RSA et son JWKS, des codes d'autorisation à usage unique, un cookie de boutique simulée et une base SQLite PocketBase distincte par test. Le faux endpoint de jeton vérifie le challenge PKCE. Sa branche historique de vérification du secret confidential a été supprimée le 16 octobre 2026 ; il refuse maintenant tout paramètre `client_secret` et tout en-tête d'authentification du client. Le faux endpoint GraphQL exige l'access token brut attendu par Shopify.
 
 Le serveur simulé est sous notre contrôle. Ces tests vérifient le comportement du client et de PocketBase face au contrat simulé ; ils ne constituent pas un test des serveurs Shopify.
 

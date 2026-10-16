@@ -1,0 +1,55 @@
+[tools]
+go = "1.27.2"
+node = "24.14.1"
+cloudflared = "2026.10.1"
+
+[env]
+SHOPIFY_SHOP_URL = 'https://example-store.myshopify.com'
+SHOPIFY_REDIRECT_URL = 'https://tunnel.example.com/studio/callback'
+SHOPIFY_CUSTOMER_CLIENT_ID = 'REPLACE_WITH_SHOPIFY_CLIENT_ID'
+SSO_ALLOW_LOOPBACK_HTTP = '0'
+
+[tasks.setup]
+description = "Install Go modules and the pinned SDK used by integration tests"
+run = [
+  "go mod download",
+  "npm ci --prefix integration --ignore-scripts --no-audit --no-fund",
+]
+
+[tasks.dev]
+description = "Serve PocketBase and the frontend on 127.0.0.1:8090"
+run = 'go run . serve --http=127.0.0.1:8090 --dir="{{config_root}}/pb_data" --publicDir="{{config_root}}/pb_public"'
+
+[tasks.test]
+description = "Run all Go tests, including the three official SDK integrations"
+depends = ["setup"]
+env.RUN_JS_SDK_TEST = "1"
+run = "go test ./... -count=1 -cover"
+
+[tasks.tunnel]
+description = "Open a temporary HTTPS tunnel to the local PocketBase server"
+run = "cloudflared tunnel --url http://127.0.0.1:8090"
+
+[tasks.build]
+description = "Build the application into bin/"
+run = "go build -o ./bin/ ."
+
+[tasks.vet]
+description = "Run Go static analysis"
+run = "go vet ./..."
+
+[tasks."check:js"]
+description = "Check the syntax of the integration scripts"
+run = [
+  "node --check integration/oauth.mjs",
+  "node --check integration/sdk.mjs",
+  "node --check integration/frontend.mjs",
+]
+
+[tasks."check:diff"]
+description = "Check whitespace errors in the Git diff"
+run = "git diff --check"
+
+[tasks.check]
+description = "Run tests, static analysis, build and syntax checks"
+depends = ["test", "vet", "build", "check:js", "check:diff"]

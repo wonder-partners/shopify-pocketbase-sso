@@ -46,7 +46,7 @@ func TestSetupRequiresTheHostUsersCollection(t *testing.T) {
 }
 
 func TestSetupPreservesUserSchemaIdentityAndNativeLinks(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	token, user := f.authRecord()
 	documentsCollection(f)
@@ -95,7 +95,7 @@ func TestSetupPreservesUserSchemaIdentityAndNativeLinks(t *testing.T) {
 }
 
 func TestPrivateAccountsAreNotPublicThroughRecordsOrExpansion(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	result := f.login()
 	token, user := f.authRecord()
 	a := privateAccount(f, user.Id)
@@ -123,7 +123,7 @@ func TestPrivateAccountsAreNotPublicThroughRecordsOrExpansion(t *testing.T) {
 }
 
 func TestSystemCollectionProtectionsRemainNative(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	c, _ := f.app.FindCollectionByNameOrId(accountsCollectionName)
 	if err := f.app.Delete(c); err == nil {
 		t.Fatal("system collection could be deleted")
@@ -140,7 +140,7 @@ func TestSystemCollectionProtectionsRemainNative(t *testing.T) {
 }
 
 func TestPrivateAccountRecoveryUsesOnlyTheNativeIdentityLink(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	_, user := f.authRecord()
 	if err := f.app.Delete(privateAccount(f, user.Id)); err != nil {
@@ -159,7 +159,7 @@ func TestPrivateAccountRecoveryUsesOnlyTheNativeIdentityLink(t *testing.T) {
 }
 
 func TestPrivateAccountDeletionCascadesFromUser(t *testing.T) {
-	f := setup(t, "", "")
+	f := setup(t, "")
 	f.login()
 	_, user := f.authRecord()
 	a := privateAccount(f, user.Id)

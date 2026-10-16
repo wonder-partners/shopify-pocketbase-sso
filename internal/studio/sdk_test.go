@@ -11,9 +11,9 @@ import (
 
 func TestOfficialPocketBaseJavaScriptSDK(t *testing.T) {
 	if os.Getenv("RUN_JS_SDK_TEST") != "1" {
-		t.Skip("npm ci --prefix integration, then RUN_JS_SDK_TEST=1 go test ./internal/studio")
+		t.Skip("run mise run test to include the official JS SDK integrations")
 	}
-	f := setup(t, "", "numeric:")
+	f := setup(t, "numeric:")
 	documentsCollection(f)
 	f.login()
 	token, shop := f.authRecord()
@@ -36,9 +36,9 @@ func TestOfficialPocketBaseJavaScriptSDK(t *testing.T) {
 
 func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 	if os.Getenv("RUN_JS_SDK_TEST") != "1" {
-		t.Skip("set RUN_JS_SDK_TEST=1 to execute the official JS SDK")
+		t.Skip("run mise run test to include the official JS SDK integrations")
 	}
-	f := setup(t, "", "numeric:")
+	f := setup(t, "numeric:")
 	input := map[string]string{"url": f.api.URL, "shopURL": f.shop.URL, "redirectURL": f.s.cfg.RedirectURL}
 	data, _ := json.Marshal(input)
 	script, _ := filepath.Abs("../../integration/oauth.mjs")

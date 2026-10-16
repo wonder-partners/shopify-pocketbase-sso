@@ -4,6 +4,33 @@ L'intégration ajoute un fournisseur `shopify` au parcours OAuth2 natif de Pocke
 
 Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucun packaging ni publication n'est préparé.
 
+## Développement avec mise
+
+Le projet utilise [mise-en-place](https://mise.jdx.dev/) pour Go `1.27.2`, Node `24.14.1`, cloudflared `2026.10.1`, les variables locales et les tâches. npm est fourni avec Node. Les versions sont fixées dans `mise.toml`. Les outils sont installés dans le stockage de mise, sans copie dans le dépôt. `bin/` est réservé aux résultats de compilation de l'application ; il contient aussi d'anciens builds du prototype conservés pour l'historique local.
+
+Après installation de mise, depuis la racine du dépôt :
+
+```powershell
+mise trust
+mise install
+mise run setup
+```
+
+Les variables sont directement dans `[env]` de `mise.toml` : URL de boutique, URL de callback, Client ID public et exception HTTP loopback. L'intégration utilise exclusivement un client public PKCE, sans secret client à demander ou configurer. Aucun fichier local ou fichier d'exemple n'est nécessaire pour ce parcours.
+
+mise charge automatiquement ces fichiers avec `mise run` et `mise exec`, sans script PowerShell à sourcer. L'ancien `config.local.ps1` a été retiré après migration.
+
+| Commande | Effet |
+| --- | --- |
+| `mise run setup` | Télécharge les modules Go et installe le SDK fixé pour les tests |
+| `mise run dev` | Lance PocketBase et le frontend sur `127.0.0.1:8090` |
+| `mise run tunnel` | Ouvre un tunnel HTTPS temporaire vers le serveur local |
+| `mise run test` | Prépare les dépendances et lance toute la suite, avec les trois intégrations SDK |
+| `mise run build` | Compile le binaire dans `bin/` |
+| `mise run check` | Lance tests, analyse Go, build, contrôles JavaScript et diff Git |
+
+`mise tasks` liste aussi les tâches individuelles `vet`, `check:js` et `check:diff`. Les tâches partent de la racine du projet et ne nécessitent pas d'activer mise dans le profil du shell. Les tests utilisent leurs propres serveurs et bases temporaires ; ils n'exigent pas de configuration Shopify locale. `mise.local.toml`, ignoré par Git, reste utilisable pour d'éventuelles surcharges personnelles.
+
 ## Responsabilités
 
 - PocketBase génère le state, le verifier et le challenge PKCE via son endpoint natif `users/auth-methods`.
@@ -32,11 +59,14 @@ Les erreurs attendues de `prompt=none` proposent le bouton de connexion. Une MFA
 Lancement depuis la racine du dépôt, lorsque les URL de test sont alignées :
 
 ```powershell
-. ./config.local.ps1
-go run . serve --http=127.0.0.1:8090 --dir=D:/Workspaces/shopify-pocketbase-sso/pb_data --publicDir=D:/Workspaces/shopify-pocketbase-sso/pb_public
+mise run dev
 ```
 
 `--publicDir` vaut `./pb_public` par défaut, relatif au répertoire de travail, y compris avec un binaire placé dans `bin`. Utiliser un chemin absolu évite toute ambiguïté.
+
+La tâche `dev` fournit les chemins absolus de `pb_data` et `pb_public` à partir de la racine du projet.
+
+Dans un second terminal à la racine du projet, `mise run tunnel` lance le cloudflared géré par mise. Reporter l'origine HTTPS affichée dans `SHOPIFY_REDIRECT_URL`, avec `/auth/callback`, et enregistrer cette URL exacte dans Shopify avant le login réel. Redémarrer le serveur après modification de sa configuration. Le tunnel direct publie également les routes admin de PocketBase ; l'arrêter après le test.
 
 Le frontend utilise l'origine courante et `/auth/callback`. Avant un login réel, aligner exactement cette URL, `SHOPIFY_REDIRECT_URL` et `[customer_authentication].redirect_uris`. La configuration locale et l'app Shopify utilisent encore `/studio/callback` ; cette étape n'a modifié ni l'une ni l'autre et n'a pas démarré le backend sur les données locales réelles.
 
@@ -47,7 +77,6 @@ Le frontend utilise l'origine courante et `/auth/callback`. Avant un login réel
 | `ShopURL` | `SHOPIFY_SHOP_URL` | Origine HTTPS de la boutique de confiance |
 | `RedirectURL` | `SHOPIFY_REDIRECT_URL` | Callback du frontend, enregistré à l'identique dans Shopify |
 | `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Client Customer Account API |
-| `ClientSecret` | `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Vide pour notre client public PKCE |
 | `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement limitée au loopback |
 
 Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Cette origine est celle du frontend, pas nécessairement celle de l'API. Si le frontend et l'API ont des origines différentes, leur configuration CORS doit autoriser les requêtes nécessaires. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre l'en-tête `Origin` sans le réécrire.
@@ -134,6 +163,8 @@ Le code de cet exemple est exécuté tel quel par le test d'intégration avec le
 Le fournisseur ajoute automatiquement un nonce à l'URL native : le nonce est le challenge S256 PKCE, jamais le verifier secret. C'est une valeur imprévisible et différente pour chaque tentative. Au moment de l'échange, le serveur recalcule le challenge depuis le verifier reçu et compare le nonce de l'ID token signé. Aucune valeur attendue n'a besoin d'être conservée côté serveur.
 
 Le serveur conserve les contrôles de format PKCE, callback exact, client, origine, signature JWKS, algorithme, issuer, audience, expiration, nonce et `at_hash` si présent. Les sujets Shopify numériques sont normalisés après vérification de signature, sans perte de précision. Le POST natif et la réponse des méthodes d'auth sont marqués `no-store`.
+
+PocketBase impose un champ `ClientSecret` non vide dans sa configuration de fournisseur. Le marqueur public interne `public-pkce-no-secret` satisfait uniquement cette validation. Il n'est jamais envoyé à Shopify : le client OAuth d'échange ne possède aucun secret, et le simulateur refuse tout paramètre `client_secret` ou en-tête d'authentification du client.
 
 Un e-mail identique ou un compte présent dans `Authorization` ne suffisent pas à fusionner une identité Shopify avec un compte existant. Seule une liaison exacte est acceptée ; un conflit renvoie HTTP 409. Les tokens Shopify ne sont ni exposés dans les métadonnées OAuth ni conservés pour des appels ultérieurs.
 

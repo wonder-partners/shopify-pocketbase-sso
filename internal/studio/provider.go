@@ -84,8 +84,7 @@ func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*
 		return nil, errors.New("invalid Shopify client or redirect URL")
 	}
 	ctx := oidc.ClientContext(p.Context(), s.client)
-	// Use the configured public/confidential Shopify client, not PocketBase's
-	// mandatory config placeholder for public clients. Never send that placeholder.
+	// Exchange as a public PKCE client, never using PocketBase's config marker.
 	token, err := s.oauth.Exchange(ctx, code, oauth2.VerifierOption(flow.verifier))
 	if err != nil {
 		return nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)

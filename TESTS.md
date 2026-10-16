@@ -3,16 +3,17 @@
 Environnement : Windows amd64, Go 1.27.2, PocketBase 0.40.5, SDK JavaScript officiel 0.28.1.
 
 ```powershell
-npm ci --prefix integration --ignore-scripts --no-audit --no-fund
-$env:RUN_JS_SDK_TEST = '1'
-go test ./... -count=1 -cover
-go vet ./...
-go build ./...
-node --check integration/oauth.mjs
-node --check integration/sdk.mjs
-node --check integration/frontend.mjs
-git diff --check
+mise install
+mise run check
 ```
+
+`mise run check` prépare les dépendances, fixe `RUN_JS_SDK_TEST=1` pour la suite et lance les contrôles Go/JavaScript ainsi que `git diff --check`. Pour lancer seulement les tests : `mise run test`. Les trois intégrations SDK sont incluses par défaut. La configuration locale Shopify n'est pas nécessaire pour ces fixtures.
+
+Validation du passage à mise le 16 octobre 2026 : `mise tasks validate`, installation des outils fixés et `mise run check` réussis sur Windows. Go `1.27.2`, Node `24.14.1`, npm `11.11.0`. Les cinq variables locales migrées ont été comparées en mémoire au résultat de `mise exec` et sont identiques, sans afficher leurs valeurs. Aucun backend n'a été lancé sur la base réelle.
+
+Après nettoyage du mode confidential le même jour, `mise run check` passe à nouveau avec les trois intégrations SDK. Le code et les fixtures utilisent uniquement le client public PKCE. Le simulateur refuse tout paramètre `client_secret`, même vide, et tout en-tête `Authorization` au token endpoint. Les tests vérifient donc aussi que le marqueur interne exigé par PocketBase n'est pas transmis. Couvertures après retrait : hôte 48,4 %, cœur 86,5 %, migrations 81,0 %. Aucune configuration locale privée n'est nécessaire.
+
+cloudflared `2026.10.1` est désormais installé par mise hors du dépôt. Version, chemin et égalité SHA-256 avec l'ancienne copie vérifiés avant retrait de `bin/cloudflared.exe`. Les neuf tâches sont valides et la commande de `tunnel` a été vérifiée en dry-run. Aucun tunnel n'a été ouvert pendant ce contrôle.
 
 Résultat du 15 octobre 2026 : succès des 49 groupes de tests du cœur, dont les deux intégrations SDK. Couverture du cœur : 86,8 %. Les cinq groupes des migrations historiques passent aussi, avec une couverture de 81,0 %. `go vet`, la compilation et les vérifications JavaScript passent.
 

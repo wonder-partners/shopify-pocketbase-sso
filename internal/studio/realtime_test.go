@@ -13,7 +13,7 @@ import (
 func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 	for _, method := range []string{"shopify", "password"} {
 		t.Run(method, func(t *testing.T) {
-			f := setup(t, "", "")
+			f := setup(t, "")
 			documentsCollection(f)
 			f.login()
 			shopToken, shop := f.authRecord()

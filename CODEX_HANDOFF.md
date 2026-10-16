@@ -1,5 +1,54 @@
 # Passation technique Codex vers T3 Code
 
+## cloudflared géré par mise, 16 octobre 2026
+
+Contributor a demandé pourquoi les binaires étaient dans le projet et proposé leur gestion par mise. Inventaire : `cloudflared.exe` était un outil téléchargé, les autres exécutables sont des builds locaux des différentes étapes du prototype et le build actuel `studio-sso.exe`. Ces builds ne sont pas des dépendances installables par mise.
+
+`mise.toml` déclare désormais `cloudflared = "2026.10.1"`, identique à la version de la copie locale, et une tâche `tunnel` qui exécute `cloudflared tunnel --url http://127.0.0.1:8090`. Mise l'a installé hors du dépôt dans son stockage utilisateur. Version et résolution du chemin vérifiées ; empreinte SHA-256 identique à l'ancienne copie. Après vérification qu'aucun processus n'utilisait cette copie, `bin/cloudflared.exe` a été retiré. Les anciens builds du prototype sont conservés, et `mise run build` continue de produire le binaire actuel dans `bin/`, ignoré par Git.
+
+README mis à jour. `mise tasks validate` valide les neuf tâches et `mise run --dry-run tunnel` produit la commande attendue. Aucun tunnel ni serveur n'a été lancé pour cette migration. Pour lancer maintenant : `mise run dev` et, dans un autre terminal, `mise run tunnel`. Les anciennes commandes utilisant `./bin/cloudflared.exe` sont historiques. L'alignement des URL OAuth reste à faire avant le test réel.
+
+## Suppression du mode confidential, 16 octobre 2026
+
+Contributor a explicitement demandé de retirer ce reliquat du code, de la configuration et de la documentation. L'intégration prend maintenant exclusivement en charge le client public PKCE de notre app Shopify.
+
+- `Config.ClientSecret`, sa lecture dans `main.go`, sa variable mise et le choix d'authentification Basic ont été supprimés. Le client OAuth d'échange a un Client ID et `AuthStyleInParams`, sans secret. Une ancienne variable d'environnement de secret n'est plus lue.
+- Le marqueur public `public-pkce-no-secret` reste fixé dans la configuration native du fournisseur, uniquement parce que PocketBase v0.40.5 exige un champ non vide. Il ne participe jamais à l'échange Shopify. Ne pas le confondre avec un credential à fournir.
+- Le simulateur et les fixtures n'ont plus de paramètre de secret ni de branche confidential. Les tests existants utilisent tous PKCE. Le simulateur refuse tout paramètre `client_secret`, même vide, et tout en-tête `Authorization` au token endpoint, ce qui vérifie aussi que le marqueur PocketBase ne fuit pas vers Shopify. Les secrets propres aux autres fournisseurs restent préservés et testés.
+- Le fichier local ne contenait que l'ancienne affectation vide ; elle a été retirée et le fichier désormais inutile supprimé. `mise.local.toml` reste ignoré pour d'éventuelles surcharges personnelles, sans obligation d'en créer un. Les quatre variables publiques restent dans `mise.toml`. Aucun nouveau fichier d'exemple.
+- README et TESTS décrivent le client public uniquement. Les archives identifient le test confidential comme supprimé et leurs instructions de configuration ne demandent plus de secret. Les sections de migration ci-dessous sont historiques et ne doivent pas réintroduire cette option.
+
+Validation : `mise run check` réussi avec les trois intégrations SDK, l'analyse Go, le build et les contrôles JS/diff. Couvertures : hôte 48,4 %, cœur 86,5 %, migrations 81,0 %. La variation de couverture du cœur suit le retrait de la branche et des scénarios confidential. `mise tasks validate` passe aussi sans fichier local. Aucun frontend, règle d'auth, compte, liaison, dépendance ou callback externe modifié ; aucune base réelle ouverte par un serveur.
+
+## Historique remplacé : déclaration du secret optionnel sans modèle
+
+Contributor a questionné l'utilité de `mise.local.example.toml` et proposé les déclarations `required` de mise. Vérification de la documentation officielle : `required` vérifie qu'une valeur est fournie par l'environnement ou un autre fichier ; il ne fournit pas de valeur et ne se combine pas avec `default` ou `value`.
+
+Dans notre cas, le seul paramètre privé, `SHOPIFY_CUSTOMER_CLIENT_SECRET`, est facultatif pour le client public PKCE. Il est donc déclaré dans `[env]` de `mise.toml` avec `{ default = "", redact = true }`. Les valeurs publiques restent définies directement. `mise.local.example.toml` est supprimé. Le vrai `mise.local.toml` ignoré est conservé et peut fournir le secret pour un client confidential. Aucun `required` artificiel n'est ajouté au secret ; une future variable réellement obligatoire pourra utiliser cette déclaration. README mis à jour. Ces instructions remplacent les références aux modèles des sections historiques ci-dessous.
+
+## Historique : déplacement des variables publiques dans mise.toml
+
+À la demande explicite de Contributor, les valeurs non sensibles existantes sont maintenant directement dans `[env]` de `mise.toml` : `SHOPIFY_SHOP_URL`, `SHOPIFY_REDIRECT_URL`, `SHOPIFY_CUSTOMER_CLIENT_ID` et `SSO_ALLOW_LOOPBACK_HTTP`. Les doublons ont été retirés de `mise.local.toml`. Ce fichier ignoré et son modèle public ne contiennent plus que `SHOPIFY_CUSTOMER_CLIENT_SECRET`, vide pour notre client public PKCE. Aucun secret n'a été ajouté à la configuration partagée.
+
+L'environnement résolu par `mise exec` a été comparé en mémoire avant/après : les cinq valeurs sont strictement identiques, sans affichage. `mise tasks validate` passe. README et modèle local sont à jour. Aucun changement applicatif, de callback, de données ou de configuration Shopify externe. Cette répartition remplace celle de la section de migration ci-dessous.
+
+## Nettoyage du tooling avec mise, 16 octobre 2026
+
+Contributor a demandé de remplacer la gestion manuelle des outils, variables et tâches par mise-en-place. Cette section remplace les instructions historiques de configuration/lancement PowerShell présentes plus bas.
+
+- État de départ constaté : arbre Git propre, HEAD `ee66871` (`Add minimal Shopify SSO test frontend`). Le frontend précédent est donc désormais commité. `shopify-app/` existe mais est vide ; ne pas recréer son ancien scaffold ou sa configuration depuis l'historique.
+- mise est déjà installé sur le poste, version `2026.10.11`. `mise.toml` fixe Go `1.27.2` et Node `24.14.1`, sans changement de version du projet. npm `11.11.0` est fourni par ce Node. Go était déjà installé par mise ; Node a été installé par mise pendant cette étape. Aucun changement du profil shell ou de la configuration globale n'a été effectué.
+- Les cinq affectations constantes de l'ancien `config.local.ps1` ont été transférées vers `[env]` dans `mise.local.toml`, puis comparées aux variables réellement chargées par `mise exec` en mémoire, sans affichage des valeurs. Égalité confirmée, puis ancien fichier local retiré. `mise.local.toml` est ignoré par Git. Le modèle public est désormais `mise.local.example.toml` ; `config.example.ps1` est supprimé. Les anciens patterns d'ignore de credentials sont conservés.
+- `SSO_ALLOW_LOOPBACK_HTTP` vaut `0` par défaut dans la configuration partagée. Le secret client est déclaré pour masquage par mise. Ne pas imprimer `mise env` ou le contenu de `mise.local.toml` dans les logs/chat. Le callback local migré reste inchangé, sur l'ancien chemin ; le nettoyage n'aligne pas encore les callbacks OAuth.
+- Tâches : `setup` pour modules Go et `npm ci` du SDK fixé ; `dev` pour lancer Go/PocketBase et le frontend avec des chemins absolus sous la racine du projet ; `test` avec dépendance `setup` et `RUN_JS_SDK_TEST=1` ; `build` vers `bin/` ; `vet`, `check:js`, `check:diff` ; `check` pour la validation complète. Les tâches utilisent le shell natif par défaut de mise et n'exigent pas d'activation du profil. Aucun nouveau script de wrapper.
+- README et TESTS utilisent maintenant les commandes mise. Les messages de tests ignorés orientent vers `mise run test`. Le SDK de test reste une dépendance npm fixée dans `integration`, et le navigateur continue d'utiliser le CDN. Aucun changement de logique OAuth, du frontend, des dépendances applicatives ou des données.
+
+Validation : `mise tasks validate`, `mise install` et `mise run check` ont réussi. La suite complète avec les trois intégrations SDK passe. Couvertures inchangées : hôte 48,4 %, cœur 86,8 %, migrations 81,0 %. Build réussi dans `bin/`. La tâche `dev` n'a pas été lancée sur la base réelle. Aucune publication externe ni modification Shopify.
+
+Commandes actuelles : `mise install`, `mise run setup`, `mise run check`, puis `mise run dev` seulement au moment du test réel, avec les URL alignées. Pour une nouvelle installation, créer `mise.local.toml` à partir du modèle avant le login réel ; sur ce poste il est déjà migré, ne pas l'écraser.
+
+Prochaine tâche fonctionnelle inchangée : accès HTTPS de test et alignement du callback frontend `/auth/callback`, de `SHOPIFY_REDIRECT_URL` et de l'app Shopify, puis test réel avec Contributor. Vérifier d'abord où se trouve maintenant le projet Shopify, puisque son ancien dossier est vide.
+
 ## Implémentation frontend autorisée le 16 octobre 2026
 
 Cette section remplace les constats d'absence du frontend et d'attente de validation ci-dessous. Contributor a autorisé la reprise du frontend minimal à partir de « Manual code exchange » de la documentation PocketBase, puis demandé explicitement un CDN pour le SDK, sans copie locale, et tout le CSS/JavaScript inline dans le HTML. Ces demandes remplacent le plan historique de fichiers JS/CSS/vendor séparés.
@@ -237,7 +286,7 @@ Problème : Headless était indisponible sur la première boutique, qui affichai
 
 Solution retenue : enregistrer le client via notre app Shopify et `[customer_authentication].redirect_uris`. Le scope d'installation de l'app actuelle est `customer_read_customers`. Le flux client demande les scopes OIDC/API `openid`, `email` et `customer-account-api:full`.
 
-Conséquence : Headless n'est pas requis dans le montage actuel. Le client utilisé est public avec PKCE ; son secret doit rester vide. Un client confidential reste pris en charge par le code et testé avec le fournisseur simulé, mais ce n'est pas le mode réel retenu.
+Conséquence : Headless n'est pas requis dans le montage actuel. Le client utilisé est public avec PKCE, sans secret. Le support exploratoire des clients confidential a été supprimé le 16 octobre 2026 du code et des tests.
 
 Le scope d'installation, les scopes d'autorisation client et l'OAuth d'installation marchand sont trois choses différentes. Le callback client se configure dans `customer_authentication`, pas dans `[auth].redirect_urls`. Voir la [configuration d'app Shopify](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication).
 
@@ -381,7 +430,7 @@ Le middleware :
 
 `FetchToken` impose le Client ID et l'URL de callback configurés. Il échange le code avec `oauth2.VerifierOption`, puis vérifie le jeton avec le JWKS et les algorithmes annoncés. Issuer, audience, expiration, nonce et `at_hash` si présent restent contrôlés. Le profil GraphQL est chargé seulement après la validation du jeton.
 
-Pour un client public, PocketBase exige pourtant un champ de secret de configuration non vide. Le code utilise un marqueur public interne uniquement pour satisfaire cette validation. Ce marqueur n'est jamais envoyé à Shopify. L'échange public utilise les paramètres, sans secret ni Basic Auth. Le mode confidential utilise Basic Auth et le vrai secret de configuration.
+Pour un client public, PocketBase exige pourtant un champ de secret de configuration non vide. Le code utilise un marqueur public interne uniquement pour satisfaire cette validation. Ce marqueur n'est jamais envoyé à Shopify. L'échange utilise les paramètres, sans secret ni Basic Auth. Aucun mode confidential n'est conservé.
 
 ### 4.4 Bug réel du sujet OIDC numérique
 
@@ -852,7 +901,6 @@ Les noms seulement sont consignés ici ; les valeurs de configuration locale ne 
 | `SHOPIFY_SHOP_URL` | Origine de la boutique de confiance |
 | `SHOPIFY_REDIRECT_URL` | URL complète de callback choisie et servie par le frontend |
 | `SHOPIFY_CUSTOMER_CLIENT_ID` | Identifiant du client Customer Account API |
-| `SHOPIFY_CUSTOMER_CLIENT_SECRET` | Secret éventuel de client confidential ; absent/vide pour le client public retenu |
 | `SSO_ALLOW_LOOPBACK_HTTP` | Exception explicite pour fixtures locales loopback, jamais solution de production |
 | `RUN_JS_SDK_TEST` | Active les deux intégrations Node/SDK dans la suite Go |
 
