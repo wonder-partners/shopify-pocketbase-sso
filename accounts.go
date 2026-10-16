@@ -22,7 +22,13 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 	originalResponse := e.Response
 	captured := &authResponseBuffer{header: originalResponse.Header().Clone()}
 	e.Response = captured
-	defer func() { e.App, e.Response = originalApp, originalResponse }()
+	waitingForOuter := false
+	defer func() {
+		e.App = originalApp
+		if !waitingForOuter {
+			e.Response = originalResponse
+		}
+	}()
 	rejectedResponse := errors.New("Shopify unlink hook wrote an error response")
 	err := originalApp.RunInTransaction(func(tx core.App) error {
 		e.App = tx
@@ -34,7 +40,22 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 		}
 		return nil
 	})
-	e.App, e.Response = originalApp, originalResponse
+	e.App = originalApp
+	if outer := originalApp.TxInfo(); outer != nil {
+		// Native deletion writes its 204 in an OnComplete callback. Keep the
+		// buffer attached until that callback has run, then flush only the
+		// response belonging to the actual commit or policy rollback.
+		outer.OnComplete(func(txErr error) error {
+			e.Response = originalResponse
+			if captured.Written() && ((err == nil && txErr == nil) || (err == rejectedResponse && errors.Is(txErr, rejectedResponse))) {
+				return captured.sendTo(originalResponse)
+			}
+			return nil
+		})
+		waitingForOuter = true
+		return err // Let the owner roll back a written HTTP rejection too.
+	}
+	e.Response = originalResponse
 	if err != nil && err != rejectedResponse {
 		return err
 	}

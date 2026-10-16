@@ -1,12 +1,15 @@
 package shopifysso
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
@@ -30,13 +33,14 @@ func projectTransactionServer(t *testing.T, f *fixture, scenario string) string 
 	}
 	r.Bind(&hook.Handler[*core.RequestEvent]{Priority: -1, Func: func(e *core.RequestEvent) error {
 		original := e.App
+		response := e.Response
 		defer func() { e.App = original }()
 		return e.App.RunInTransaction(func(tx core.App) error {
 			e.App = tx
 			if err := e.Next(); err != nil {
 				return err
 			}
-			if e.Written() {
+			if tracker, ok := response.(interface{ Written() bool }); ok && tracker.Written() {
 				t.Error("Shopify response was sent before the outer transaction completed")
 			}
 			if scenario == "denied" {
@@ -57,6 +61,71 @@ func projectTransactionServer(t *testing.T, f *fixture, scenario string) string 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+func TestShopifyUnlinkWaitsForOuterTransaction(t *testing.T) {
+	for _, mode := range []string{"native", "custom", "http_denied", "error"} {
+		for _, scenario := range []string{"success", "denied", "commit_failure"} {
+			t.Run(mode+"/"+scenario, func(t *testing.T) {
+				f := setup(t, "")
+				f.login()
+				token, user := f.authRecord()
+				accountID := privateAccount(f, user.Id).Id
+				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode != "native" {
+					f.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).BindFunc(func(e *core.RecordRequestEvent) error {
+						if err := e.Next(); err != nil {
+							return err
+						}
+						if mode == "error" {
+							return e.ForbiddenError("Project denied unlink.", nil)
+						}
+						status := http.StatusOK
+						if mode == "http_denied" {
+							status = http.StatusForbidden
+						}
+						e.Response.Header().Set("X-Project-Unlink", "custom")
+						return e.JSON(status, map[string]string{"message": mode})
+					})
+				}
+				serverURL := projectTransactionServer(t, f, scenario)
+				result := f.request("DELETE", serverURL+"/api/collections/_externalAuths/records/"+link.Id, "", "", token)
+				accepted := scenario == "success" && (mode == "native" || mode == "custom")
+				if accepted {
+					status := http.StatusNoContent
+					if mode == "custom" {
+						status = http.StatusOK
+					}
+					f.expect(result, status)
+				} else {
+					if result.status < http.StatusBadRequest {
+						t.Fatal("outer rollback exposed successful unlink", result.status, result.body)
+					}
+					if scenario == "denied" || mode == "http_denied" || mode == "error" {
+						f.expect(result, http.StatusForbidden)
+					}
+				}
+				if mode == "http_denied" || (mode == "custom" && accepted) {
+					if result.body != `{"message":"`+mode+`"}` || result.headers.Get("X-Project-Unlink") != "custom" {
+						t.Fatal("outer transaction lost the custom response", result.body)
+					}
+				}
+				for _, target := range []struct{ collection, id string }{{core.CollectionNameExternalAuths, link.Id}, {accountsCollectionName, accountID}} {
+					_, err := f.app.FindRecordById(target.collection, target.id)
+					if accepted {
+						if !errors.Is(err, sql.ErrNoRows) {
+							t.Fatal("committed unlink retained an identity", err)
+						}
+					} else if err != nil {
+						t.Fatal("rejected unlink deleted an identity", err)
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestShopifyAuthWaitsForOuterTransaction(t *testing.T) {

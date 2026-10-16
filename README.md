@@ -94,6 +94,8 @@ Deleting a Shopify link, through the records API or a native security purge, als
 
 Unlink request responses, including custom responses written by project hooks, are buffered until the transaction completes. A storage or commit failure discards any pending success response; a project error response rolls back both identity deletions.
 
+This also applies when a project middleware opens the transaction before the unlink request. A written HTTP rejection propagates to that transaction's owner to trigger rollback. The native 204 response and custom hook responses remain buffered until the outer transaction finishes.
+
 When a previously unverified email becomes verified, PocketBase revokes the old OAuth links and refresh tokens. Only an accepted Shopify authentication can restore its current Shopify link and private identity within that same transaction. Native email verification or account recovery leaves the old Shopify identity revoked.
 
 Verification also invalidates existing PocketBase sessions when a legacy private Shopify identity has no native OAuth link. Token invalidation and private identity deletion share the verification transaction; a failed revocation rolls both back.
