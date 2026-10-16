@@ -48,30 +48,6 @@ async function loginWithShopify(silent = false) {
   location.assign(url.href);
 }
 
-async function completeShopifyLogin() {
-  const params = new URLSearchParams(location.search);
-  history.replaceState(null, '', location.pathname);
-
-  const saved = sessionStorage.getItem('shopify.oauth');
-  sessionStorage.removeItem('shopify.oauth');
-  const flow = JSON.parse(saved || 'null');
-
-  if (!flow || !Number.isFinite(flow.expires) ||
-      flow.expires <= Date.now() || flow.state !== params.get('state')) {
-    throw new Error('Retour Shopify invalide ou expiré.');
-  }
-
-  if (params.has('error')) return { error: params.get('error') };
-  const code = params.get('code');
-  if (!code) throw new Error('Code Shopify manquant.');
-
-  // Empêcher la liaison avec un autre compte déjà connecté.
-  pb.authStore.clear();
-  return pb.collection('users').authWithOAuth2Code(
-    'shopify', code, flow.verifier, redirectURL,
-  );
-}
-
 function renderAccount() {
   account.hidden = !pb.authStore.isValid;
   account.textContent = pb.authStore.isValid ? `Compte studio : ${pb.authStore.record?.email || ''}` : '';
@@ -125,21 +101,12 @@ document.getElementById('logout').addEventListener('click', () => run(() => {
 }));
 
 async function initialize() {
-  if (location.pathname === '/auth/callback') {
-    const result = await completeShopifyLogin();
-    if (result.error) {
-      const expected = ['login_required', 'interaction_required', 'consent_required'];
-      status.textContent = expected.includes(result.error)
-        ? 'Shopify demande une connexion ou un consentement. Utilisez le bouton de connexion.'
-        : result.error === 'access_denied'
-          ? 'Connexion Shopify annulée. Vous pouvez réessayer.'
-          : 'Shopify a refusé la connexion. Vous pouvez réessayer.';
-      return;
-    }
+  const manual = new URLSearchParams(location.search).has('login');
+  history.replaceState(null, '', '/');
+  if (pb.authStore.isValid) {
     await verifyAccess();
-    history.replaceState(null, '', '/');
-  } else if (pb.authStore.isValid) {
-    await verifyAccess();
+  } else if (manual) {
+    status.textContent = 'Utilisez le bouton de connexion pour continuer avec Shopify.';
   } else {
     pb.authStore.clear();
     status.textContent = 'Tentative de connexion silencieuse avec Shopify…';

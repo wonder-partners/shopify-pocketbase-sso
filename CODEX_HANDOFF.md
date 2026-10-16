@@ -1,5 +1,10 @@
 # Passation technique Codex vers T3 Code
 
+## Séparation du frontend en deux pages, 16 octobre 2026
+
+Contributor a demandé de suivre la séparation de l’exemple PocketBase « Manual code exchange ». Implémentation : `pb_public/index.html` lance la connexion et vérifie l’accès API ; `pb_public/redirect.html` vérifie state/expiration, consomme le stockage puis échange le code. SDK CDN fixé et scripts/styles inline conservés. `/auth/callback` sert maintenant `redirect.html`, sans changer le callback publié, mise ou le tunnel. Après succès, navigation avec remplacement vers `/` et vérification API par index. En cas d’échec, lien `/?login` pour proposer la connexion sans boucle silencieuse ; ce paramètre non sensible est immédiatement retiré de l’adresse. Protections CSP recalculées pour les deux pages. Tests et README adaptés. Validation : `mise run check` réussi, dont les trois intégrations SDK, Go vet/build et syntaxe JS/diff. Couvertures hôte 48,4 %, cœur 86,5 %, migrations 81,0 %. Tests de routes pour les deux fichiers, parité README et SDK CDN, callback réussi puis nouvelle instance SDK sur index, reprise interactive sans boucle, rejeu et erreurs MFA/conflit. Aucun serveur réel redémarré, aucune donnée ni configuration Shopify modifiée. Prochaine action : Contributor redémarre `mise run dev:public` pour charger le routage et les nouvelles empreintes CSP, puis vérifie le login réel. Les sections antérieures décrivant une page unique sont historiques.
+
+
 ## Correction du redirect_uri mismatch sur la boutique, 16 octobre 2026
 
 Contributor a rencontré `redirect_uri mismatch` à l'ouverture du domaine fixe. Diagnostic : frontend et requête d'autorisation utilisent exactement le callback attendu et le bon Client ID, un seul `redirect_uri`, version `studio-sso-4` active. L'erreur a été reproduite dans un profil navigateur privé neuf. La publication du TOML ne suffisait donc pas à prouver la configuration effective de la dev store.

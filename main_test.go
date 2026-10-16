@@ -83,7 +83,7 @@ func frontendFixture(t *testing.T) (string, string, http.Handler) {
 
 func TestFrontendRoutes(t *testing.T) {
 	_, _, handler := frontendFixture(t)
-	for _, path := range []string{"/", "/auth/callback?code=private-code&state=private-state"} {
+	for _, path := range []string{"/", "/redirect.html", "/auth/callback?code=private-code&state=private-state"} {
 		t.Run(path, func(t *testing.T) {
 			res := httptest.NewRecorder()
 			handler.ServeHTTP(res, httptest.NewRequest("GET", path, nil))
@@ -97,6 +97,10 @@ func TestFrontendRoutes(t *testing.T) {
 				t.Fatal("callback data reflected or cookie added")
 			}
 			html := strings.ReplaceAll(res.Body.String(), "\r\n", "\n")
+			callback := path != "/"
+			if strings.Contains(html, "async function completeShopifyLogin()") != callback || strings.Contains(html, "async function loginWithShopify(") == callback {
+				t.Fatal("login and callback pages are not separated")
+			}
 			for _, tag := range []string{"<style>", "<script type=\"module\">"} {
 				_, content, found := strings.Cut(html, tag)
 				content, _, _ = strings.Cut(content, "</")
@@ -143,7 +147,8 @@ func TestFrontendMatchesREADMEAndPinnedSDK(t *testing.T) {
 	_, example, _ := strings.Cut(readme, "<!-- native-redirect-example:start -->")
 	_, example, _ = strings.Cut(example, "```javascript\n")
 	example, _, _ = strings.Cut(example, "\n```")
-	if example == "" || !strings.Contains(read("pb_public/index.html"), example) {
+	login, callback, found := strings.Cut(example, "\n\nasync function completeShopifyLogin()")
+	if example == "" || !found || !strings.Contains(read("pb_public/index.html"), login) || !strings.Contains(read("pb_public/redirect.html"), "async function completeShopifyLogin()"+callback) {
 		t.Fatal("frontend OAuth functions diverge from tested README")
 	}
 	var pkg struct {
@@ -152,8 +157,10 @@ func TestFrontendMatchesREADMEAndPinnedSDK(t *testing.T) {
 	if err := json.Unmarshal([]byte(read("integration/package.json")), &pkg); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(read("pb_public/index.html"), "https://cdn.jsdelivr.net/npm/pocketbase@"+pkg.DevDependencies["pocketbase"]+"/dist/pocketbase.es.mjs") {
-		t.Fatal("CDN SDK version differs from pinned integration dependency")
+	for _, path := range []string{"pb_public/index.html", "pb_public/redirect.html"} {
+		if !strings.Contains(read(path), "https://cdn.jsdelivr.net/npm/pocketbase@"+pkg.DevDependencies["pocketbase"]+"/dist/pocketbase.es.mjs") {
+			t.Fatal("CDN SDK version differs from pinned integration dependency")
+		}
 	}
 }
 

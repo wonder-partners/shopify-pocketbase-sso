@@ -3,11 +3,15 @@ import {readFileSync} from 'node:fs';
 import PocketBase from 'pocketbase';
 
 const input = JSON.parse(readFileSync(0, 'utf8'));
-const html = readFileSync(new URL('../pb_public/index.html', import.meta.url), 'utf8');
-const source = html.match(/<script type="module">\s*([\s\S]*?)<\/script>/)[1]
-  .replace(/^import PocketBase[^\n]+\n/, '');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const execute = new AsyncFunction('PocketBase', 'document', 'location', 'history', 'sessionStorage', source);
+function moduleFor(file) {
+  const html = readFileSync(new URL('../pb_public/' + file, import.meta.url), 'utf8');
+  const source = html.match(/<script type="module">\s*([\s\S]*?)<\/script>/)[1]
+    .replace(/^import PocketBase[^\n]+\n/, '');
+  return new AsyncFunction('PocketBase', 'document', 'location', 'history', 'sessionStorage', source);
+}
+const loginPage = moduleFor('index.html');
+const redirectPage = moduleFor('redirect.html');
 function storage() {
   const data = new Map();
   return {
@@ -53,6 +57,7 @@ async function load(url = '/') {
   const location = {
     pathname: current.pathname, search: current.search,
     assign(destination) { this.destination = destination; },
+    replace(destination) { this.replacement = destination; },
   };
   page = {elements, location};
   const history = {replaceState(_, __, url) {
@@ -60,7 +65,9 @@ async function load(url = '/') {
     location.pathname = next.pathname;
     location.search = next.search;
   }};
+  const execute = current.pathname === '/auth/callback' ? redirectPage : loginPage;
   await execute(PocketBase, {getElementById: id => elements.get(id)}, location, history, sessionStorage);
+  if (location.replacement) return load(location.replacement);
   return page;
 }
 const text = () => page.elements.get('status').textContent;
@@ -87,6 +94,9 @@ async function main() {
   assert.equal(exchanges, 0);
 
   phase = 'interactive native auth and API';
+  await load('/?login');
+  assert.equal(page.location.destination, undefined, 'Return link must not restart silent login');
+  assert.equal(page.location.search, '');
   await click('login');
   assert.equal(new URL(page.location.destination).searchParams.has('prompt'), false);
   const form = await nativeFetch(page.location.destination, {redirect: 'manual'});
@@ -114,6 +124,7 @@ async function main() {
   await load(callback);
   assert.equal(exchanges, 1);
   assert.match(text(), /invalide ou expiré/);
+  await load('/?login');
   await click('logout');
   assert.equal(new PocketBase(input.url).authStore.isValid, false);
   assert.equal(page.elements.get('account').hidden, true);
@@ -136,6 +147,7 @@ async function main() {
   assert.equal(sessionStorage.getItem('shopify.oauth'), null);
 
   phase = 'OAuth error rendered safely';
+  await load('/?login');
   await click('silent');
   const denied = await authorize();
   denied.searchParams.set('error', '<img src=x onerror=alert(1)>');
@@ -145,6 +157,7 @@ async function main() {
   assert.equal(exchanges, 2);
 
   phase = 'MFA challenge';
+  await load('/?login');
   await click('login');
   injectedResponse = new Response(JSON.stringify({mfaId: 'test-mfa'}), {status: 401});
   await load(await authorize());
@@ -152,6 +165,7 @@ async function main() {
   assert.equal(new PocketBase(input.url).authStore.isValid, false);
 
   phase = 'account conflict';
+  await load('/?login');
   await click('login');
   injectedResponse = new Response('{}', {status: 409});
   await load(await authorize());

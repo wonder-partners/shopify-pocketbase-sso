@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Studio · Retour Shopify</title>
+  <style>
+:root { font-family: system-ui, sans-serif; color: #192c29; background: #f3f5f3; line-height: 1.6; }
+body { margin: 0; padding: 48px 20px; }
+main { max-width: 660px; margin: auto; padding: 32px; background: white; border: 1px solid #dce3df; border-radius: 12px; }
+#status { overflow-wrap: anywhere; }
+a { color: #215c42; }
+  </style>
+  <script type="module">
+import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
+
+const pb = new PocketBase(window.location.origin);
+const redirectURL = new URL('/auth/callback', window.location.origin).href;
+const status = document.getElementById('status');
+
+async function completeShopifyLogin() {
+  const params = new URLSearchParams(location.search);
+  history.replaceState(null, '', location.pathname);
+
+  const saved = sessionStorage.getItem('shopify.oauth');
+  sessionStorage.removeItem('shopify.oauth');
+  const flow = JSON.parse(saved || 'null');
+
+  if (!flow || !Number.isFinite(flow.expires) ||
+      flow.expires <= Date.now() || flow.state !== params.get('state')) {
+    throw new Error('Retour Shopify invalide ou expiré.');
+  }
+
+  if (params.has('error')) return { error: params.get('error') };
+  const code = params.get('code');
+  if (!code) throw new Error('Code Shopify manquant.');
+
+  // Empêcher la liaison avec un autre compte déjà connecté.
+  pb.authStore.clear();
+  return pb.collection('users').authWithOAuth2Code(
+    'shopify', code, flow.verifier, redirectURL,
+  );
+}
+
+try {
+  const result = await completeShopifyLogin();
+  if (result.error) {
+    const expected = ['login_required', 'interaction_required', 'consent_required'];
+    status.textContent = expected.includes(result.error)
+      ? 'Shopify demande une connexion ou un consentement. Revenez au studio pour utiliser le bouton de connexion.'
+      : result.error === 'access_denied'
+        ? 'Connexion Shopify annulée. Vous pouvez réessayer.'
+        : 'Shopify a refusé la connexion. Vous pouvez réessayer.';
+  } else {
+    location.replace('/');
+  }
+} catch (error) {
+  // Never render/log SDK errors: they can contain request credentials.
+  if (error.response?.mfaId) {
+    pb.authStore.clear();
+    status.textContent = 'Shopify a validé le premier facteur. PocketBase demande un second facteur MFA, non pris en charge par cette page de test.';
+  } else if (error.status === 409) {
+    status.textContent = 'Conflit avec un compte existant. Aucune fusion automatique ne sera effectuée.';
+  } else {
+    status.textContent = 'Connexion impossible. Le retour peut être invalide ou expiré. Vous pouvez réessayer depuis le studio.';
+  }
+}
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Connexion Shopify</h1>
+    <p id="status" role="status" aria-live="polite">Vérification du retour Shopify…</p>
+    <a id="retry" href="/?login">Revenir au studio</a>
+    <noscript>Activez JavaScript pour terminer la connexion Shopify.</noscript>
+  </main>
+</body>
+</html>
