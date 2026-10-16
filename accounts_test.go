@@ -417,7 +417,7 @@ func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			f := setup(t, "email")
 			f.login()
-			_, user := f.authRecord()
+			oldToken, user := f.authRecord()
 			accountID := privateAccount(f, user.Id).Id
 			var token string
 			var err error
@@ -443,6 +443,7 @@ func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
 			if _, err := f.app.FindRecordById(accountsCollectionName, accountID); !errors.Is(err, sql.ErrNoRows) {
 				t.Fatal("native recovery kept the revoked private identity", err)
 			}
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", oldToken), http.StatusUnauthorized)
 			f.loginShop()
 			f.expect(f.completeCallback(f.authorize(false)), 409)
 			if count, err := f.app.CountRecords(core.CollectionNameExternalAuths); err != nil || count != 0 {
@@ -453,25 +454,37 @@ func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
 }
 
 func TestNativeRecoveryRollsBackWhenShopifyRevocationFails(t *testing.T) {
-	f := setup(t, "email")
-	f.login()
-	_, user := f.authRecord()
-	accountID := privateAccount(f, user.Id).Id
-	f.app.OnRecordDelete(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
-		return errors.New("private storage unavailable")
-	})
-	token, err := user.NewVerificationToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := json.Marshal(map[string]string{"token": token})
-	f.expect(f.request("POST", f.api.URL+"/api/collections/users/confirm-verification", "", string(body), ""), 500)
-	after, err := f.app.FindRecordById("users", user.Id)
-	if err != nil || after.Verified() || privateAccount(f, user.Id).Id != accountID {
-		t.Fatal("failed recovery persisted verification or lost the private identity", err)
-	}
-	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
-		t.Fatal("failed recovery lost the native identity", err)
+	for _, scenario := range []string{"native_link", "orphaned_identity"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t, "email")
+			f.login()
+			oldToken, user := f.authRecord()
+			accountID := privateAccount(f, user.Id).Id
+			if scenario == "orphaned_identity" {
+				if _, err := f.app.DB().NewQuery("DELETE FROM _externalAuths").Execute(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.app.OnRecordDelete(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
+				return errors.New("private storage unavailable")
+			})
+			token, err := user.NewVerificationToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]string{"token": token})
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users/confirm-verification", "", string(body), ""), 500)
+			after, err := f.app.FindRecordById("users", user.Id)
+			if err != nil || after.Verified() || after.TokenKey() != user.TokenKey() || privateAccount(f, user.Id).Id != accountID {
+				t.Fatal("failed recovery persisted verification, rotated the session key, or lost the private identity", err)
+			}
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", oldToken), http.StatusOK)
+			if scenario == "native_link" {
+				if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
+					t.Fatal("failed recovery lost the native identity", err)
+				}
+			}
+		})
 	}
 }
 

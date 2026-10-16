@@ -91,6 +91,15 @@ func revokeUnverifiedShopifyAccounts(e *core.RecordEvent) error {
 	defer func() { e.App = originalApp }()
 	return originalApp.RunInTransaction(func(tx core.App) error {
 		e.App = tx
+		count, err := tx.CountRecords(accountsCollectionName, dbx.HashExp{"user": e.Record.Id})
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			// PocketBase only rotates the key when it finds native OAuth links.
+			// Include legacy private identities in the same verification update.
+			e.Record.RefreshTokenKey()
+		}
 		if err := e.Next(); err != nil {
 			return err
 		}
