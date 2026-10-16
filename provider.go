@@ -147,6 +147,9 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if e.Request.Method == http.MethodGet && strings.HasPrefix(e.Request.URL.Path, "/api/collections/") && strings.HasSuffix(e.Request.URL.Path, "/auth-methods") {
 		// The native response contains a fresh PKCE verifier, not public metadata.
 		noStore(e)
+		if !s.isReady() {
+			return hideShopifyAuthMethod(e)
+		}
 	}
 	if e.Request.Method != http.MethodPost || !strings.HasPrefix(e.Request.URL.Path, "/api/collections/") || !strings.HasSuffix(e.Request.URL.Path, "/auth-with-oauth2") {
 		return e.Next()
@@ -175,6 +178,10 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	parts := strings.Split(e.Request.URL.Path, "/")
 	if len(parts) != 5 || (parts[3] != c.Name && parts[3] != c.Id) {
 		return e.ForbiddenError("Shopify is not configured for this auth collection.", nil)
+	}
+	if !s.isReady() {
+		e.Response.Header().Set("Retry-After", "5")
+		return router.NewApiError(http.StatusServiceUnavailable, "Shopify authentication is temporarily unavailable.", nil)
 	}
 	if !pkceVerifierPattern.MatchString(body.CodeVerifier) {
 		return e.BadRequestError("A valid PKCE verifier is required.", nil)

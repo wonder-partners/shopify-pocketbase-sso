@@ -51,6 +51,21 @@ func setup(t *testing.T, fault string) *fixture {
 }
 
 func setupCollection(t *testing.T, fault, collection string, useID bool) *fixture {
+	f := setupWithShopHandler(t, fault, collection, useID, nil)
+	waitForDiscovery(t, f.s)
+	return f
+}
+
+func waitForDiscovery(t *testing.T, s *Service) {
+	t.Helper()
+	select {
+	case <-s.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shopify discovery did not become ready")
+	}
+}
+
+func setupWithShopHandler(t *testing.T, fault, collection string, useID bool, wrap func(http.Handler) http.Handler) *fixture {
 	t.Helper()
 	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
 	studioURL := "http://" + f.api.Listener.Addr().String()
@@ -60,6 +75,9 @@ func setupCollection(t *testing.T, fault, collection string, useID bool) *fixtur
 		t.Fatal(err)
 	}
 	f.shop.Config.Handler = m
+	if wrap != nil {
+		f.shop.Config.Handler = wrap(m)
+	}
 	f.mock = m
 	f.shop.Start()
 	t.Cleanup(f.shop.Close)
@@ -91,10 +109,16 @@ func setupCollection(t *testing.T, fault, collection string, useID bool) *fixtur
 	} else if collection != "users" {
 		cfg.AuthCollection = collection
 	}
-	f.s, err = New(context.Background(), f.app, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	f.s, err = New(ctx, f.app, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		cancel()
+		<-f.s.done
+	})
 	r, err := apis.NewRouter(f.app)
 	if err != nil {
 		t.Fatal(err)

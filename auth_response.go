@@ -2,12 +2,60 @@ package shopifysso
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+// PocketBase may retain Shopify's provider configuration across restarts.
+// Filter only Shopify while discovery is pending; all native methods and
+// response fields remain available, including the legacy providers list.
+func hideShopifyAuthMethod(e *core.RequestEvent) error {
+	original := e.Response
+	captured := &authResponseBuffer{header: original.Header().Clone()}
+	e.Response = captured
+	defer func() { e.Response = original }()
+	err := e.Next()
+	e.Response = original
+	if err != nil {
+		return err
+	}
+	if !captured.Written() {
+		return e.InternalServerError("PocketBase auth methods response was not completed.", nil)
+	}
+	if captured.status != http.StatusOK {
+		return captured.sendTo(original)
+	}
+	var result map[string]any
+	if json.Unmarshal(captured.Bytes(), &result) != nil || result == nil {
+		return e.InternalServerError("Unable to read the authentication methods response.", nil)
+	}
+	filter := func(value any) []any {
+		providers, _ := value.([]any)
+		filtered := make([]any, 0, len(providers))
+		for _, item := range providers {
+			provider, _ := item.(map[string]any)
+			if provider["name"] != providerName {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered
+	}
+	if oauth, ok := result["oauth2"].(map[string]any); ok {
+		oauth["providers"] = filter(oauth["providers"])
+	}
+	if providers, ok := result["authProviders"]; ok {
+		result["authProviders"] = filter(providers)
+	}
+	for key, values := range captured.header {
+		original.Header()[key] = values
+	}
+	original.Header().Del("Content-Length")
+	return e.JSON(http.StatusOK, result)
+}
 
 // Commit the profile and native identity links only when the entire OAuth chain
 // accepts the request. A native MFA challenge accepts the Shopify factor and
@@ -46,11 +94,7 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 	if !captured.Written() {
 		return e.InternalServerError("PocketBase auth response was not completed.", nil)
 	}
-	for key, values := range captured.header {
-		original.Header()[key] = values
-	}
-	original.WriteHeader(captured.status)
-	_, writeErr := original.Write(captured.Bytes())
+	writeErr := captured.sendTo(original)
 	if actionErr != nil {
 		return actionErr
 	}
@@ -61,6 +105,15 @@ type authResponseBuffer struct {
 	bytes.Buffer
 	header http.Header
 	status int
+}
+
+func (b *authResponseBuffer) sendTo(w http.ResponseWriter) error {
+	for key, values := range b.header {
+		w.Header()[key] = values
+	}
+	w.WriteHeader(b.status)
+	_, err := w.Write(b.Bytes())
+	return err
 }
 
 func (b *authResponseBuffer) Header() http.Header { return b.header }

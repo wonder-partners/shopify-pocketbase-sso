@@ -3,7 +3,9 @@
 // frontend callback and application lifecycle.
 //
 // Initialize a Service with New from the host's OnServe hook, then call Register
-// with that event's router. One shop and one auth collection are supported per
-// PocketBase app. Importing this package registers the shopify provider factory
+// with that event's router. Shopify discovery runs in the background and retries
+// until ready or the service context is canceled or the app terminates.
+// One shop and one auth collection are supported per PocketBase app.
+// Importing this package registers the shopify provider factory
 // with PocketBase; shop configuration stays local to each Service.
 package shopifysso

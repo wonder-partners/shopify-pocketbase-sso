@@ -29,7 +29,11 @@ func ensureCollection(app core.App, collectionName string) error {
 }
 
 func (s *Service) configureProvider() error {
-	c, err := s.app.FindCollectionByNameOrId(s.cfg.AuthCollection)
+	collection := s.collectionID
+	if collection == "" {
+		collection = s.cfg.AuthCollection
+	}
+	c, err := s.app.FindCollectionByNameOrId(collection)
 	if err != nil {
 		return err
 	}
@@ -54,7 +58,9 @@ func (s *Service) configureProvider() error {
 	if err := s.app.Save(c); err != nil {
 		return err
 	}
-	s.collectionID = c.Id
+	if s.collectionID == "" {
+		s.collectionID = c.Id
+	}
 	// Collection IDs keep these hooks active when the host renames the collection.
 	s.app.OnRecordAuthWithOAuth2Request(c.Id).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
 		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,

@@ -84,6 +84,10 @@ func main() {
 
 The host project owns its fields and rules. The library enables the `shopify` provider and creates the private `_shopifyIdentities` collection. The auth collection's create rule determines whether a first login can create an account.
 
+`New` validates local configuration and database setup synchronously, then discovers Shopify's endpoints in the background. A discovery outage does not prevent PocketBase from starting. Until discovery succeeds, `listAuthMethods()` omits Shopify while preserving other auth methods, and explicit Shopify login requests return HTTP 503 with `Retry-After`.
+
+Each discovery attempt has a 20-second deadline, with retry delays increasing from 1 second to a maximum of 60 seconds. The provider becomes available automatically after discovery and provider configuration succeed. The context passed to `New` controls the service lifetime; cancellation or PocketBase termination stops pending requests and retries. Use a lifetime context, such as `context.Background()` in the example, rather than a short startup timeout.
+
 Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
 Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. Before commit, an authentication rule or request hook rejection rolls back these database changes. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.

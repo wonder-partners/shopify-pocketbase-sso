@@ -116,7 +116,7 @@ func (s *Service) discover(ctx context.Context) error {
 		Scopes:      []string{"openid", "email", "customer-account-api:full"},
 		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
 	}
-	keyCtx := oidc.ClientContext(context.Background(), s.client)
+	keyCtx := oidc.ClientContext(s.ctx, s.client)
 	s.verifier = oidc.NewVerifier(d.Issuer, shopifySubjectKeySet{oidc.NewRemoteKeySet(keyCtx, d.JWKSURL)}, &oidc.Config{
 		ClientID: s.cfg.ClientID, SupportedSigningAlgs: d.Algorithms,
 	})
