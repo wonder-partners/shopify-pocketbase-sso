@@ -98,6 +98,8 @@ Profile synchronization and identity links are committed together after the OAut
 
 For Shopify logins, native new-device email alerts and their mail hooks run asynchronously after a successful commit. Slow mail delivery holds neither the database transaction nor the login response. A rollback discards the alert; delivery failures are logged without rejecting the login. Other auth methods keep PocketBase's normal alert behavior.
 
+Project hooks may nest `e.App.RunInTransaction` calls using the callback's app for subsequent hooks. Shopify response tracking and deferred alerts remain attached to the same authentication transaction.
+
 ## Minimal frontend example
 
 Use the official PocketBase SDK. Replace `users` with your chosen collection and serve the callback at the URL configured in both `RedirectURL` and Shopify.

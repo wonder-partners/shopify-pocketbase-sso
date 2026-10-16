@@ -295,6 +295,67 @@ type oauthRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f oauthRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func withNestedAuthTransaction(e *core.RequestEvent, next func() error) error {
+	original := e.App
+	defer func() { e.App = original }()
+	return e.App.RunInTransaction(func(tx core.App) error {
+		return tx.RunInTransaction(func(nested core.App) error {
+			e.App = nested
+			return next()
+		})
+	})
+}
+
+func TestShopifyNestedProjectTransactions(t *testing.T) {
+	for _, stage := range []string{"oauth", "auth", "oauth_denied", "auth_denied"} {
+		t.Run(stage, func(t *testing.T) {
+			f := setup(t, "email")
+			f.login()
+			_, before := f.authRecord()
+			accountID := privateAccount(f, before.Id).Id
+			f.mock.Fault = ""
+			f.mock.ProfileEmail = "changed@example.test"
+			wrap := func(e *core.RequestEvent, next func() error) error {
+				return withNestedAuthTransaction(e, func() error {
+					if err := next(); err != nil {
+						return err
+					}
+					if strings.HasSuffix(stage, "_denied") {
+						return e.ForbiddenError("Nested policy denied login.", nil)
+					}
+					return nil
+				})
+			}
+			if strings.HasPrefix(stage, "oauth") {
+				f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
+					return wrap(e.RequestEvent, e.Next)
+				})
+			} else {
+				f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+					return wrap(e.RequestEvent, e.Next)
+				})
+			}
+			f.loginShop()
+			result := f.completeCallback(f.authorize(false))
+			after, err := f.app.FindRecordById("users", before.Id)
+			if err != nil || privateAccount(f, before.Id).Id != accountID {
+				t.Fatal("nested transaction lost the account or private identity", err)
+			}
+			if strings.HasSuffix(stage, "_denied") {
+				f.expect(result, http.StatusForbidden)
+				if after.Email() != before.Email() || after.Verified() != before.Verified() {
+					t.Fatal("nested policy denial persisted profile changes")
+				}
+			} else {
+				f.expect(result, http.StatusOK)
+				if decodeAuth(t, result).Record["id"] != before.Id || after.Email() != f.mock.ProfileEmail || !after.Verified() {
+					t.Fatal("nested transaction did not complete the Shopify login")
+				}
+			}
+		})
+	}
+}
+
 func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
 	f := setup(t, "")
 	original := f.s.client.Transport

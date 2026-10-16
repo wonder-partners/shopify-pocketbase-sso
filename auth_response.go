@@ -18,6 +18,12 @@ type shopifyAuthTransaction struct {
 	responseScheduled bool
 }
 
+// PocketBase reuses its active transaction for nested calls. Keep this request's
+// wrapper too, so response tracking and deferred alerts survive project hooks.
+func (tx *shopifyAuthTransaction) RunInTransaction(fn func(core.App) error) error {
+	return tx.App.RunInTransaction(func(core.App) error { return fn(tx) })
+}
+
 // PocketBase writes the native auth response after commit. Wrap its finalizer
 // after all registered auth hooks so a hook that skips Next cannot mark the
 // response as scheduled. Keep the wrapper local to this request's app.

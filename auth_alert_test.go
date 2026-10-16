@@ -169,3 +169,29 @@ func TestNativePasswordAuthAlertKeepsItsHookBehavior(t *testing.T) {
 		t.Fatal("native password auth did not run the mail hook before responding")
 	}
 }
+
+func TestNestedShopifyTransactionDefersAuthAlert(t *testing.T) {
+	f := setup(t, "")
+	f.login()
+	useNewDevice(f)
+	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+		return withNestedAuthTransaction(e.RequestEvent, e.Next)
+	})
+	delivered := make(chan bool, 1)
+	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := e.App.NonconcurrentDB().NewQuery("UPDATE users SET emailVisibility = emailVisibility").WithContext(ctx).Execute()
+		delivered <- e.App.TxInfo() == nil && err == nil
+		return nil
+	})
+	f.login()
+	select {
+	case afterCommit := <-delivered:
+		if !afterCommit {
+			t.Fatal("nested auth transaction sent an alert before commit")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("nested transaction alert was not sent")
+	}
+}
