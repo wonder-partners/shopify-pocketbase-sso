@@ -1,35 +1,12 @@
 # Authentification Shopify dans PocketBase
 
-La bibliothèque Go ajoute un fournisseur `shopify` au parcours OAuth2 natif de PocketBase. Le frontend utilise `listAuthMethods()`, redirige vers Shopify puis appelle `authWithOAuth2Code()` après vérification du retour. PocketBase gère ensuite ses tokens, règles, hooks et MFA.
+Le package Go `shopifysso` ajoute un fournisseur `shopify` au parcours OAuth2 natif de PocketBase. Le frontend utilise `listAuthMethods()`, redirige vers Shopify puis appelle `authWithOAuth2Code()` après vérification du retour. PocketBase gère ensuite ses tokens, règles, hooks et MFA.
 
-## Bibliothèque et démonstration
+Ce projet contient la bibliothèque, ses tests et sa documentation. L’application hôte possède sa collection d’authentification, ses champs, ses règles, son frontend et son callback. La bibliothèque configure le fournisseur `shopify` et son stockage privé d’identités.
 
-- La racine contient le package public `shopifysso`, sa configuration, le fournisseur OAuth, la validation OIDC et le stockage privé des identités.
-- Le projet hôte possède sa collection d’authentification, ses champs, ses règles, son frontend et son callback. La bibliothèque active OAuth2 et configure seulement le fournisseur `shopify`.
-- [`examples/demo`](examples/demo/README.md) contient l’exécutable, les deux pages HTML et les migrations historiques du prototype. Sa configuration Shopify et son tunnel restent dans ce même dossier. `mise.toml` à la racine fournit les commandes de développement et de validation.
-- `tests/sdk` contient les tests JavaScript avec le SDK officiel PocketBase. `internal/mockshop` simule Shopify pour les tests Go et SDK. La bibliothèque ne les importe pas et ne lit aucun fichier ni variable d’environnement du dépôt.
+`New` découvre les endpoints distants et configure la base. `Register` adapte les requêtes OAuth natives. Le package ne démarre aucun serveur, ne sert aucune page et ne lit aucune variable d’environnement.
 
-L’arborescence sépare ces responsabilités :
-
-```text
-.
-├── *.go                      # Bibliothèque et tests Go associés
-├── go.mod / go.sum           # Module Go public
-├── mise.toml                 # Commandes de développement et de validation
-├── internal/mockshop/        # Fournisseur Shopify simulé pour les tests
-├── tests/
-│   ├── README.md             # Guide des tests
-│   └── sdk/                  # Tests JavaScript, package npm et version du SDK
-├── examples/demo/
-│   ├── main.go / main_test.go
-│   ├── pb_public/            # Pages de connexion et de retour OAuth
-│   ├── shopify-app/          # Configuration de l’app Shopify de test
-│   ├── cloudflared.yml       # Tunnel de la démo
-│   └── migrations/           # Migrations historiques du prototype
-└── docs/history/             # Enquêtes, validations et anciennes passations
-```
-
-Un seul module Go suffit. Son import ne démarre aucun serveur et ne sert aucune page. Il enregistre la factory du fournisseur `shopify` auprès de PocketBase. `New` découvre les endpoints distants et configure la base, puis `Register` adapte les requêtes OAuth natives.
+`internal/mockshop` et `tests/sdk` servent uniquement aux tests de la bibliothèque. Le code de production ne les importe pas.
 
 ## Installation dans un projet Go PocketBase
 
@@ -81,19 +58,19 @@ func main() {
 }
 ```
 
-Le frontend doit servir son propre callback. La [démo](examples/demo/README.md) montre le service statique et la lecture des variables d’environnement. Aucun frontend, tunnel, outil Node ou migration du prototype n’est nécessaire pour importer et compiler la bibliothèque.
+Le frontend doit servir son propre callback. Aucun frontend, tunnel, outil Node ou migration du prototype n’est nécessaire pour importer et compiler la bibliothèque.
 
 La compatibilité est actuellement testée avec PocketBase `0.40.5` et Go `1.27.2`, fixés dans `go.mod`. Le périmètre est une boutique et une collection d’auth par application PocketBase. Plusieurs instances PocketBase peuvent coexister dans le même processus, chacune avec son service. Changer de collection après la création des identités nécessite une migration du projet hôte. Aucun déplacement de comptes n’est automatique.
 
 ## Configuration du fournisseur
 
-| Paramètre Go | Variable lue par la démo | Rôle |
-| --- | --- | --- |
-| `ShopURL` | `SHOPIFY_SHOP_URL` | Origine HTTPS de la boutique de confiance |
-| `RedirectURL` | `SHOPIFY_REDIRECT_URL` | Callback du frontend, enregistré à l'identique dans Shopify |
-| `ClientID` | `SHOPIFY_CUSTOMER_CLIENT_ID` | Client Customer Account API |
-| `AuthCollection` | Aucune dans la démo | Nom ou ID d’une collection d’auth existante, `users` par défaut |
-| `AllowLoopbackHTTP` | `SSO_ALLOW_LOOPBACK_HTTP=1` | Exception de développement limitée au loopback |
+| Paramètre Go | Rôle |
+| --- | --- |
+| `ShopURL` | Origine HTTPS de la boutique de confiance |
+| `RedirectURL` | Callback du frontend, enregistré à l’identique dans Shopify |
+| `ClientID` | Client public Customer Account API |
+| `AuthCollection` | Nom ou ID d’une collection d’auth existante, `users` par défaut |
+| `AllowLoopbackHTTP` | Exception de développement limitée au loopback |
 
 Le POST OAuth exige l'en-tête `Origin` correspondant à l'origine de `RedirectURL`, que le navigateur envoie automatiquement. Cette origine est celle du frontend, pas nécessairement celle de l'API. Si le frontend et l'API ont des origines différentes, leur configuration CORS doit autoriser les requêtes nécessaires. Aucun cookie ni en-tête manuel n'est requis côté navigateur. Un proxy doit transmettre l'en-tête `Origin` sans le réécrire.
 
@@ -105,9 +82,7 @@ La collection d’auth choisie par `AuthCollection` doit exister. Les collection
 
 ## Exemple frontend minimal
 
-Le frontend suit la séparation de l’exemple PocketBase « Manual code exchange » : `index.html` lance la connexion et vérifie l’accès API ; `redirect.html` vérifie le retour OAuth et échange le code. Les deux fichiers conservent leurs scripts et styles inline, avec le SDK officiel via CDN.
-
-Le callback est directement le fichier statique `/redirect.html`. Après succès, cette page revient à `/`, où le SDK restaure son auth store et vérifie l’accès API. En cas d’erreur ou d’absence de session Shopify, elle affiche un message et un lien `/?login` vers les boutons de connexion, sans nouvelle tentative silencieuse automatique.
+L’application hôte gère la navigation vers Shopify et le retour OAuth. Le callback choisi doit vérifier le state, supprimer les paramètres temporaires et échanger le code avec le SDK officiel.
 
 Adapter `pb.collection('users')` au nom de la collection configurée si elle diffère. Dans un frontend avec bundler et le SDK officiel installé :
 
@@ -116,7 +91,7 @@ import PocketBase from 'pocketbase';
 
 const pb = new PocketBase(window.location.origin);
 // Chemin choisi et servi par l'application hôte, pas par le module Go.
-// L'URL complète doit correspondre à SHOPIFY_REDIRECT_URL et au callback Shopify.
+// L’URL complète doit correspondre à Config.RedirectURL et au callback Shopify.
 const redirectURL = new URL('/redirect.html', window.location.origin).href;
 ```
 
@@ -174,9 +149,9 @@ Utilisation :
 - Gérer les erreurs des promesses dans l'interface. Ne pas afficher directement des paramètres OAuth arbitraires, ni journaliser le code, le verifier ou les tokens.
 - Après un succès, le SDK a déjà alimenté `pb.authStore`. Les appels CRUD, le refresh et le realtime utilisent l'authentification native.
 
-Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics, avec le seul SDK externe fixé depuis le CDN. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
+Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics et avec des scripts autorisés explicitement. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
 
-Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. `loginWithShopify` se trouve dans `examples/demo/pb_public/index.html` et `completeShopifyLogin` dans `examples/demo/pb_public/redirect.html` ; un test vérifie leur parité.
+Le code de cet exemple est exécuté tel quel par le test d’intégration de la bibliothèque avec le SDK officiel.
 
 ## Sécurité et limites
 
@@ -192,16 +167,14 @@ La mémoire tampon de réponse OAuth empêche la fuite d'un JWT lorsqu'un hook r
 
 Le parcours documenté et testé est la redirection manuelle avec `authWithOAuth2Code`. La popup `authWithOAuth2` n'est pas activée par cette étape, car elle utilise un autre callback. Aucun iframe silencieux, contrôle périodique de session Shopify ni synchronisation globale des déconnexions n'est ajouté.
 
-Les sessions PocketBase et Shopify restent indépendantes. `pb.authStore.clear()` déconnecte localement le studio ; il ne déconnecte pas Shopify et ne révoque pas les copies déjà émises du token. Une nouvelle tentative silencieuse peut reconnecter le client si Shopify est toujours connecté.
+Les sessions PocketBase et Shopify restent indépendantes. `pb.authStore.clear()` déconnecte localement l’application ; il ne déconnecte pas Shopify et ne révoque pas les copies déjà émises du token. Une nouvelle tentative silencieuse peut reconnecter le client si Shopify est toujours connecté.
 
 L'intégration ne conserve plus de transaction OAuth locale qui impose de rester sur la même instance Go. Cela ne configure pas pour autant une infrastructure PocketBase multi-instance ou un stockage partagé.
 
 [Parcours OAuth PocketBase](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), [SDK et auth store](https://github.com/pocketbase/js-sdk#auth-store), [authentification Shopify](https://shopify.dev/docs/api/customer/2026-10#authentication).
 
-## Tests et historique
+## Tests
 
-Voir le [guide des tests](tests/README.md). Le fournisseur simulé est réservé aux tests ; aucune fausse boutique ni gateway n'est distribuée.
+Voir le [guide des tests](tests/README.md). Le fournisseur simulé et le SDK JavaScript sont réservés aux tests.
 
-Les migrations historiques de `examples/demo/migrations` restent testées mais ne sont pas importées par la bibliothèque ni par `examples/demo/main.go`. Ne pas réutiliser leurs anciens nettoyages sur un autre projet. Ce changement ne migre ni les comptes ni les liaisons Shopify existantes.
-
-L'enquête, les validations et les anciennes passations sont conservées dans [docs/history](docs/history/README.md). Leurs anciens parcours et URL ne décrivent pas l'interface actuelle.
+L’application de démonstration est un [projet séparé dans le dossier voisin](../shopify-pocketbase-sso-demo/README.md).

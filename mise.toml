@@ -1,14 +1,6 @@
 [tools]
 go = "1.27.2"
 node = "24.14.1"
-cloudflared = "2026.10.1"
-"npm:@shopify/cli" = "4.9.4"
-
-[env]
-SHOPIFY_SHOP_URL = 'https://example-store.myshopify.com'
-SHOPIFY_REDIRECT_URL = 'https://sso.example.com/redirect.html'
-SHOPIFY_CUSTOMER_CLIENT_ID = 'REPLACE_WITH_SHOPIFY_CLIENT_ID'
-SSO_ALLOW_LOOPBACK_HTTP = '0'
 
 [tasks.setup]
 description = "Install Go modules and the pinned JavaScript test SDK in tests/sdk"
@@ -17,31 +9,15 @@ run = [
   "npm ci --prefix tests/sdk --ignore-scripts --no-audit --no-fund",
 ]
 
-[tasks.dev]
-description = "Serve PocketBase and the frontend on 127.0.0.1:8090"
-run = 'go run ./examples/demo serve --http=127.0.0.1:8090 --dir="{{config_root}}/pb_data" --publicDir="{{config_root}}/examples/demo/pb_public"'
-
 [tasks.test]
-description = "Run all Go tests, including the three official SDK integrations"
+description = "Run all Go tests, including the two official SDK integrations"
 depends = ["setup"]
 env.RUN_JS_SDK_TEST = "1"
 run = "go test ./... -count=1 -cover"
 
-[tasks.tunnel]
-description = "Run the named tunnel at sso.example.com"
-run = 'cloudflared tunnel --config "{{config_root}}/examples/demo/cloudflared.yml" run'
-
-[tasks."tunnel:login"]
-description = "Authorize cloudflared for the Cloudflare account once"
-run = "cloudflared tunnel login"
-
-[tasks."dev:public"]
-description = "Run the local server and HTTPS tunnel together"
-depends = ["dev", "tunnel"]
-
 [tasks.build]
-description = "Build the application into bin/"
-run = "go build -o ./bin/ ./examples/demo"
+description = "Build the Go library packages"
+run = "go build ./..."
 
 [tasks.vet]
 description = "Run Go static analysis"
@@ -52,7 +28,6 @@ description = "Check the syntax of the JavaScript SDK tests"
 run = [
   "node --check tests/sdk/oauth.test.mjs",
   "node --check tests/sdk/sdk.test.mjs",
-  "node --check tests/sdk/demo.test.mjs",
 ]
 
 [tasks."check:diff"]
