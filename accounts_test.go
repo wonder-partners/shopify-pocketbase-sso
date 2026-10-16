@@ -2,6 +2,7 @@ package shopifysso
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -224,7 +225,7 @@ func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A historical identity from a different issuer must stay untouched.
-			if err := putAccount(f.app, user.Id, "https://other.example.test/identity", "other-subject", "other-customer"); err != nil {
+			if err := putAccount(f.app, user.Id, "https://other.example.test/identity", "other-subject", "other-customer", nil); err != nil {
 				t.Fatal(err)
 			}
 			other, err := f.app.FindFirstRecordByFilter(accountsCollectionName,
@@ -387,7 +388,7 @@ func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
 			}
 			issuer, subject := f.shop.URL+"/identity", "previous-shopify-subject"
 			if withPrivateIdentity {
-				if err := putAccount(f.app, user.Id, issuer, subject, "previous-customer"); err != nil {
+				if err := putAccount(f.app, user.Id, issuer, subject, "previous-customer", nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -408,5 +409,68 @@ func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
 				t.Fatal("unlink during a discovery outage kept a private identity", err)
 			}
 		})
+	}
+}
+
+func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
+	for _, action := range []string{"verification", "password_reset", "orphaned_identity"} {
+		t.Run(action, func(t *testing.T) {
+			f := setup(t, "email")
+			f.login()
+			_, user := f.authRecord()
+			accountID := privateAccount(f, user.Id).Id
+			var token string
+			var err error
+			endpoint := "/confirm-verification"
+			if action != "password_reset" {
+				token, err = user.NewVerificationToken()
+			} else {
+				token, err = user.NewPasswordResetToken()
+				endpoint = "/confirm-password-reset"
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action == "orphaned_identity" {
+				// Reproduce an older database where verification had deleted the
+				// native link without clearing the private identity.
+				if _, err := f.app.DB().NewQuery("DELETE FROM _externalAuths").Execute(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body, _ := json.Marshal(map[string]string{"token": token, "password": "OwnerPassword12345", "passwordConfirm": "OwnerPassword12345"})
+			f.expect(f.request("POST", f.api.URL+"/api/collections/users"+endpoint, "", string(body), ""), 204)
+			if _, err := f.app.FindRecordById(accountsCollectionName, accountID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatal("native recovery kept the revoked private identity", err)
+			}
+			f.loginShop()
+			f.expect(f.completeCallback(f.authorize(false)), 409)
+			if count, err := f.app.CountRecords(core.CollectionNameExternalAuths); err != nil || count != 0 {
+				t.Fatal("revoked Shopify login recreated an OAuth link", err)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryRollsBackWhenShopifyRevocationFails(t *testing.T) {
+	f := setup(t, "email")
+	f.login()
+	_, user := f.authRecord()
+	accountID := privateAccount(f, user.Id).Id
+	f.app.OnRecordDelete(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
+		return errors.New("private storage unavailable")
+	})
+	token, err := user.NewVerificationToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"token": token})
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/confirm-verification", "", string(body), ""), 500)
+	after, err := f.app.FindRecordById("users", user.Id)
+	if err != nil || after.Verified() || privateAccount(f, user.Id).Id != accountID {
+		t.Fatal("failed recovery persisted verification or lost the private identity", err)
+	}
+	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
+		t.Fatal("failed recovery lost the native identity", err)
 	}
 }

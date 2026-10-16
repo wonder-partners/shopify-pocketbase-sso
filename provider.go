@@ -46,11 +46,12 @@ func init() {
 
 type shopifyProvider struct {
 	auth.BaseProvider
-	service *Service
-	subject string
-	profile *customer
-	claims  claims
-	token   *oauth2.Token
+	service         *Service
+	subject         string
+	profile         *customer
+	claims          claims
+	token           *oauth2.Token
+	previousAccount *core.Record
 }
 
 var _ auth.Provider = (*shopifyProvider)(nil)

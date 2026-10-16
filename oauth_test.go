@@ -441,7 +441,7 @@ func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
 	if err := f.app.Save(legacy); err != nil {
 		t.Fatal(err)
 	}
-	if err := putAccount(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345"); err != nil {
+	if err := putAccount(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345", nil); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := legacy.NewAuthToken()

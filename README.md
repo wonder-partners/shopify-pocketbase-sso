@@ -90,9 +90,9 @@ Each discovery attempt has a 20-second deadline, with retry delays increasing fr
 
 Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
-Deleting a Shopify link through PocketBase's `_externalAuths` records API also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409. Internal security purges do not trigger this explicit unlink behavior.
+Deleting a Shopify link, through the records API or a native security purge, also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409.
 
-When a previously unverified email becomes verified, PocketBase revokes the old OAuth links and refresh tokens. The integration restores only the current Shopify link within the same authentication transaction.
+When a previously unverified email becomes verified, PocketBase revokes the old OAuth links and refresh tokens. Only an accepted Shopify authentication can restore its current Shopify link and private identity within that same transaction. Native email verification or account recovery leaves the old Shopify identity revoked.
 
 Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. Before commit, an authentication rule or request hook rejection rolls back these database changes. A hook that stops the chain without writing an HTTP response also causes a rollback and returns HTTP 500. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.
 

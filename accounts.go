@@ -13,10 +13,27 @@ import (
 
 const accountsCollectionName = "_shopifyIdentities"
 
-// Only explicit API deletion unlinks the private identity. PocketBase's internal
-// security purges also delete external auths, but must preserve Shopify identity
-// continuity during verification upgrades and subsequent Shopify logins.
+// Keep project request hooks in the same transaction as both identity deletes.
 func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
+	if e.Record.GetString("provider") != providerName || e.Record.GetString("collectionRef") != s.collectionID {
+		return e.Next()
+	}
+	originalApp := e.App
+	defer func() { e.App = originalApp }()
+	return originalApp.RunInTransaction(func(tx core.App) error {
+		e.App = tx
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if e.Status() >= http.StatusBadRequest {
+			return router.NewApiError(e.Status(), "Shopify unlink request was rejected.", nil)
+		}
+		return nil
+	})
+}
+
+// Model hooks also cover native verification, OTP and password recovery purges.
+func (s *Service) revokeShopifyAccount(e *core.RecordEvent) error {
 	if e.Record.GetString("provider") != providerName || e.Record.GetString("collectionRef") != s.collectionID {
 		return e.Next()
 	}
@@ -29,11 +46,8 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 		if err := e.Next(); err != nil {
 			return err
 		}
-		if e.Status() >= http.StatusBadRequest {
-			return router.NewApiError(e.Status(), "Shopify unlink request was rejected.", nil)
-		}
-		// A host hook may stop the chain without deleting the native link.
-		if _, err := tx.FindRecordById(e.Collection.Id, linkID); err == nil {
+		// A host model hook may stop the chain without deleting the link.
+		if _, err := tx.FindRecordById(core.CollectionNameExternalAuths, linkID); err == nil {
 			return nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -47,8 +61,34 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 			// outages and leaves identities from other issuers untouched.
 			if identityID(a.GetString("issuer"), a.GetString("subject")) == providerID {
 				if err := tx.Delete(a); err != nil {
-					return e.InternalServerError("Unable to unlink the private Shopify identity.", err)
+					return router.NewInternalServerError("Unable to unlink the private Shopify identity.", err)
 				}
+			}
+		}
+		return nil
+	})
+}
+
+// Also revoke orphaned private rows left by older versions without a native
+// OAuth link. PocketBase cannot find those rows during its external-auth purge.
+func revokeUnverifiedShopifyAccounts(e *core.RecordEvent) error {
+	if e.Record.Original().Verified() || !e.Record.Verified() {
+		return e.Next()
+	}
+	originalApp := e.App
+	defer func() { e.App = originalApp }()
+	return originalApp.RunInTransaction(func(tx core.App) error {
+		e.App = tx
+		if err := e.Next(); err != nil {
+			return err
+		}
+		accounts, err := tx.FindRecordsByFilter(accountsCollectionName, "user = {:user}", "", 0, 0, dbx.Params{"user": e.Record.Id})
+		if err != nil {
+			return err
+		}
+		for _, a := range accounts {
+			if err := tx.Delete(a); err != nil {
+				return router.NewInternalServerError("Unable to revoke the private Shopify identity.", err)
 			}
 		}
 		return nil
@@ -89,7 +129,7 @@ func ensureAccountsCollection(app core.App, users *core.Collection) error {
 	return app.Save(c)
 }
 
-func putAccount(app core.App, user, issuer, subject, customerID string) error {
+func putAccount(app core.App, user, issuer, subject, customerID string, previous *core.Record) error {
 	a, err := app.FindFirstRecordByFilter(accountsCollectionName,
 		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": issuer, "subject": subject})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -99,11 +139,18 @@ func putAccount(app core.App, user, issuer, subject, customerID string) error {
 		return errors.New("Shopify identity already belongs to another user")
 	}
 	if a == nil {
-		c, err := app.FindCollectionByNameOrId(accountsCollectionName)
-		if err != nil {
-			return err
+		if previous != nil {
+			// Only the currently verified Shopify flow may restore its own row
+			// after a native security purge within this authentication attempt.
+			a = previous
+			a.MarkAsNew()
+		} else {
+			c, err := app.FindCollectionByNameOrId(accountsCollectionName)
+			if err != nil {
+				return err
+			}
+			a = core.NewRecord(c)
 		}
-		a = core.NewRecord(c)
 	}
 	a.Set("user", user)
 	a.Set("issuer", issuer)

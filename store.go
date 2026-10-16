@@ -76,7 +76,7 @@ func (s *Service) configureProvider() error {
 		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
 			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
 			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
-				if err := putAccount(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID); err != nil {
+				if err := putAccount(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID, p.previousAccount); err != nil {
 					return e.InternalServerError("Unable to save the private Shopify identity.", nil)
 				}
 			}
@@ -88,6 +88,12 @@ func (s *Service) configureProvider() error {
 	})
 	s.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordRequestEvent]{
 		Id: "studio_shopify_unlink", Priority: -1000, Func: s.unlinkShopifyAccount,
+	})
+	s.app.OnRecordDeleteExecute(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordEvent]{
+		Id: "studio_shopify_revoke", Priority: -1000, Func: s.revokeShopifyAccount,
+	})
+	s.app.OnRecordUpdateExecute(c.Id).Bind(&hook.Handler[*core.RecordEvent]{
+		Id: "studio_shopify_verified_revoke", Priority: -1000, Func: revokeUnverifiedShopifyAccounts,
 	})
 	return nil
 }
@@ -147,6 +153,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
 	}
 	e.Set(trustedProfileKey, p)
+	p.previousAccount = a
 	if r == nil {
 		if e.CreateData == nil {
 			e.CreateData = map[string]any{}
