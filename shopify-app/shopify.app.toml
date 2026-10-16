@@ -19,5 +19,5 @@ api_version = "2026-10"
 
 [customer_authentication]
 redirect_uris = [
-  "https://sso.example.com/auth/callback"
+  "https://sso.example.com/redirect.html"
 ]

@@ -80,7 +80,7 @@ Cette tâche regroupe `dev` et `tunnel` via les dépendances natives de mise, ex
 
 Le poste actuel a été autorisé avec `mise run tunnel:login`. Le certificat du compte et le fichier JSON privé du tunnel sont conservés dans `~/.cloudflared`, hors du dépôt. Un autre poste doit disposer des credentials du tunnel dans ce répertoire ; le certificat de connexion seul ne remplace pas ce fichier. Ne pas copier leur contenu dans Git ou dans les logs.
 
-Le frontend et `SHOPIFY_REDIRECT_URL` utilisent désormais `https://sso.example.com/redirect.html`. **Publication Shopify à faire** : la version active `studio-sso-4` et `shopify-app/shopify.app.toml` conservent encore l’ancien `/auth/callback`. La prochaine étape sera de remplacer `customer_authentication.redirect_uris` par la nouvelle URL et de publier une version. Le login réel ne pourra être retesté qu’après cet alignement et le redémarrage du serveur et du tunnel. Aucune publication n’a été effectuée pendant le passage au routage statique général.
+Le frontend, `SHOPIFY_REDIRECT_URL` et le callback Shopify publié utilisent `https://sso.example.com/redirect.html`. La version `studio-sso-5` a été publiée le 16 octobre 2026 ; une nouvelle récupération depuis Shopify confirme cette URL et l’absence de l’ancien callback. Redémarrer le serveur et le tunnel avec `mise run dev:public` pour charger les changements locaux, puis terminer la connexion réelle afin de vérifier l’accès API.
 
 La configuration de l'app est conservée dans `shopify-app/shopify.app.toml`, récupérée depuis la version publiée avant modification du seul callback client. Son état CLI local `.shopify/` est ignoré par Git. Pour la valider :
 

@@ -31,6 +31,10 @@ Séparation en deux fichiers HTML le 16 octobre 2026 : `mise run check` passe av
 
 `GET /{path...}` utilise directement `apis.Static` sans route de callback dédiée ni filtre de préfixes. Le callback local et la fixture utilisent `/redirect.html`, et l’ancien `/auth/callback` doit retourner 404. Les routes API/admin natives restent prioritaires, les protections CSP/no-store/no-referrer sont vérifiées sur les deux pages et les fichiers absents restent 404. La configuration Shopify publiée reste sur l’ancien callback ; son changement est réservé à l’étape suivante. Validation : `mise run check` réussi, avec les trois intégrations SDK, Go vet/build, syntaxe JavaScript et diff. Couvertures : hôte 30,4 %, cœur 86,5 %, migrations 81,0 %. La baisse de couverture hôte suit la suppression des branches du routeur personnalisé. Ingress validé par cloudflared ; nouveau callback autorisé et admin en 404. Le traitement natif `apis.Static` exclut déjà les succès des logs, sans middleware supplémentaire.
 
+## Publication du callback statique, 16 octobre 2026
+
+Configuration Shopify validée par la CLI sans issue, puis version `studio-sso-5` publiée avec `customer_authentication.redirect_uris = ["https://sso.example.com/redirect.html"]`. Une récupération indépendante depuis Shopify confirme le nouveau callback et l’absence de l’ancien. Serveur et tunnel non redémarrés, aucune base réelle modifiée et aucun nouveau login client complet testé. Cette publication termine l’alignement de configuration laissé en attente à l’étape précédente.
+
 ## Nouveau contrat testé
 
 Le frontend appelle les API natives uniquement :

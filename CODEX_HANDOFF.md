@@ -1,5 +1,11 @@
 # Passation technique Codex vers T3 Code
 
+## Callback statique publié dans Shopify, 16 octobre 2026
+
+Contributor a demandé de modifier l’app Shopify après le passage au routage statique général. Seul `customer_authentication.redirect_uris` dans `shopify-app/shopify.app.toml` a changé vers `https://sso.example.com/redirect.html`. Validation CLI réussie sans issue, puis publication autorisée via `mise exec -- shopify app deploy --path shopify-app --allow-updates --no-input`. Version publiée `studio-sso-5` : https://dev.shopify.com/dashboard/000000000/apps/000000000000/versions/0000000000000. Nouvelle récupération indépendante de la configuration depuis Shopify : nouveau callback présent, ancien absent. Répertoire de vérification laissé dans le dossier temporaire système, hors dépôt. Aucun changement de scopes, aucune suppression, aucune donnée PocketBase modifiée. Serveur et tunnel utilisateur non redémarrés. Prochaine action : redémarrer `mise run dev:public`, puis terminer le login réel et confirmer l’accès API. Les mentions de publication en attente ci-dessous sont historiques.
+
+
+
 ## Route statique générale et nouveau callback local, 16 octobre 2026
 
 Contributor a autorisé le passage au routage statique du binaire officiel, en réservant la modification du callback dans Shopify à l’étape suivante. `main.go` utilise directement `GET /{path...}` avec `apis.Static(os.DirFS(publicDir), false)`. Route spéciale et filtre des préfixes retirés ; les routes natives restent prioritaires. En-têtes et exclusion des requêtes statiques réussies des logs conservés. Fallback SPA toujours désactivé comme convenu. Frontend, mise, fixture et ingress Cloudflare préparés pour `/redirect.html`. Empreintes CSP recalculées. Ancien `/auth/callback` en 404.
