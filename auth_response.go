@@ -129,7 +129,7 @@ func hideShopifyAuthMethod(e *core.RequestEvent) error {
 // accepts the request. A native MFA challenge accepts the Shopify factor and
 // must persist so that the second factor can use it. Buffer responses until the
 // transaction finishes, including errors written by hooks without returning one.
-func transactionalAuthResponse(e *core.RequestEvent, action func() error) error {
+func (s *Service) transactionalAuthResponse(e *core.RequestEvent, action func() error) error {
 	original := e.Response
 	originalApp := e.App
 	captured := &authResponseBuffer{header: original.Header().Clone()}
@@ -140,7 +140,7 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 	var actionErr error
 	rejectedResponse := errors.New("OAuth hook wrote an error response")
 	err := originalApp.RunInTransaction(func(tx core.App) error {
-		authTx := &shopifyAuthTransaction{App: tx, original: originalApp}
+		authTx := &shopifyAuthTransaction{App: tx, original: s.app}
 		e.App = authTx
 		actionErr = action()
 		if !captured.Written() && authTx.preparedResponse != nil {
@@ -172,6 +172,19 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 	}
 	if !captured.Written() {
 		return e.InternalServerError("PocketBase auth response was not completed.", nil)
+	}
+	if outer := originalApp.TxInfo(); outer != nil {
+		// A nested RunInTransaction has not committed yet. A written policy
+		// rejection must also propagate so the owner rolls back the outer tx.
+		outer.OnComplete(func(txErr error) error {
+			if (err == nil && txErr == nil) || (err == rejectedResponse && errors.Is(txErr, rejectedResponse)) {
+				return captured.sendTo(original)
+			}
+			return nil
+		})
+		// ErrMFA accepts the first factor. Returning it here would roll back
+		// the outer transaction and invalidate its pending challenge.
+		return err
 	}
 	writeErr := captured.sendTo(original)
 	if actionErr != nil {

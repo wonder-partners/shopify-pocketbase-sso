@@ -195,3 +195,29 @@ func TestNestedShopifyTransactionDefersAuthAlert(t *testing.T) {
 		t.Fatal("nested transaction alert was not sent")
 	}
 }
+
+func TestOuterShopifyTransactionUsesCommittedAppForAuthAlert(t *testing.T) {
+	f := setup(t, "")
+	f.login()
+	useNewDevice(f)
+	delivered := make(chan bool, 1)
+	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := e.App.NonconcurrentDB().NewQuery("UPDATE users SET emailVisibility = emailVisibility").WithContext(ctx).Execute()
+		delivered <- e.App.TxInfo() == nil && err == nil
+		return nil
+	})
+	serverURL := projectTransactionServer(t, f, "success")
+	f.loginShop()
+	data := callbackData(t, f.callback(f.authorize(false)).body)
+	f.expect(f.request("POST", serverURL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), http.StatusOK)
+	select {
+	case afterCommit := <-delivered:
+		if !afterCommit {
+			t.Fatal("outer transaction alert used a closed transaction")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("outer transaction alert was not sent")
+	}
+}

@@ -102,6 +102,8 @@ For Shopify logins, native new-device email alerts and their mail hooks run asyn
 
 Project hooks may nest `e.App.RunInTransaction` calls using the callback's app for subsequent hooks. Shopify response tracking and deferred alerts remain attached to the same authentication transaction.
 
+When a project middleware starts a transaction before Shopify authentication, the response waits for that outer transaction to commit. A rollback discards the pending JWT or MFA challenge. An accepted MFA first factor returns no error to the transaction owner so its challenge can commit; the client still receives PocketBase's HTTP 401 MFA response after commit. Middleware must return its policy errors to the transaction owner to trigger rollback.
+
 ## Minimal frontend example
 
 Use the official PocketBase SDK. Replace `users` with your chosen collection and serve the callback at the URL configured in both `RedirectURL` and Shopify.
