@@ -1,37 +1,35 @@
-# Tests de la bibliothèque
+# Library tests
 
-Les commandes se lancent depuis la racine du dépôt.
+Run commands from the repository root.
 
 ```powershell
 mise run test
 ```
 
-Cette commande installe les dépendances Go et le SDK JavaScript fixé dans `sdk/package-lock.json`, puis exécute les tests Go et le test OAuth avec le SDK. `mise run check` ajoute l’analyse Go, la compilation de la bibliothèque et la vérification de syntaxe JavaScript.
+This installs the Go dependencies and the JavaScript SDK pinned in `sdk/package-lock.json`, then runs the Go tests and the SDK OAuth test. `mise run check` also runs Go static analysis, builds the library and checks JavaScript syntax.
 
-## Où se trouvent les tests ?
+## Test locations
 
-- Les fichiers `*_test.go` à la racine testent la bibliothèque, à côté de son code. Ils couvrent OAuth/OIDC, les identités privées et les règles, hooks, MFA et événements realtime de PocketBase.
-- `tests/sdk/oauth.test.mjs` vérifie le parcours OAuth avec le SDK JavaScript officiel.
-- `internal/mockshop` est le simulateur Shopify utilisé par les tests. Il expose localement les endpoints de découverte, OAuth, JWKS et GraphQL.
+- Root-level `*_test.go` files cover OAuth/OIDC, private identities, and PocketBase's rules, hooks, MFA and realtime events.
+- `tests/sdk/oauth.test.mjs` checks the OAuth flow with the official JavaScript SDK.
+- `internal/mockshop` simulates Shopify's discovery, OAuth, JWKS and GraphQL endpoints locally.
 
-## Test OAuth avec le SDK officiel
+## OAuth test with the official SDK
 
-`sdk/oauth.test.mjs` exécute les fonctions OAuth du [README de la bibliothèque](../README.md#exemple-frontend-minimal). Il vérifie les connexions silencieuse et interactive, le state, le stockage temporaire et le refus du rejeu, ainsi que la mise à jour de l’auth store, la persistance et le renouvellement de la session.
+`sdk/oauth.test.mjs` executes the frontend functions from the [library README](../README.md#minimal-frontend-example). It checks silent and interactive sign-in, state validation, temporary storage, replay rejection, auth store updates, session persistence and refresh.
 
-`sdk_integration_test.go` démarre des serveurs HTTP et des bases SQLite temporaires, puis lance le script Node en lui transmettant les paramètres par l’entrée standard. Ce script n’est pas une commande à lancer seul.
+`sdk_integration_test.go` starts HTTP servers and temporary SQLite databases, then passes their parameters to the Node script through standard input. The script cannot be run on its own.
 
-Les tests Go conservent la couverture des opérations CRUD et des règles de propriétaire avec les comptes Shopify et natifs. Le test JavaScript se concentre sur la compatibilité OAuth avec le SDK.
+The Go tests cover CRUD operations and owner rules for Shopify and native accounts. The JavaScript test focuses on OAuth compatibility with the SDK.
 
-Le SDK et les échanges HTTP sont réels. La navigation et le stockage du navigateur sont simulés dans Node. Ces tests ne remplacent pas un essai dans un navigateur ou une connexion à la vraie boutique Shopify. Ils n’utilisent aucune donnée client ni configuration Shopify locale.
+The SDK and HTTP requests are real. Browser navigation and storage are simulated in Node. These tests use no customer data or local Shopify configuration, and do not replace testing in a browser or against a real Shopify store.
 
-## Exécuter seulement les tests Go
+## Run only the Go tests
 
 ```powershell
 mise exec -- go test ./... -count=1
 ```
 
-Sans `RUN_JS_SDK_TEST=1`, le test OAuth avec le SDK est ignoré. Node est nécessaire pour la suite complète ; il n’est pas nécessaire pour utiliser la bibliothèque Go.
+Without `RUN_JS_SDK_TEST=1`, the SDK OAuth test is skipped. Node is required for the full test suite, but not to use the Go library. The npm dependency in `sdk/package.json` is used only for tests.
 
-La dépendance npm de `sdk/package.json` sert uniquement aux tests de cette bibliothèque.
-
-La démo et ses tests sont dans le projet voisin `shopify-pocketbase-sso-demo`. Aucun fichier de ce projet voisin n’est nécessaire pour lancer les tests de la bibliothèque.
+The demo and its tests live in the separate `shopify-pocketbase-sso-demo` project. No files from that project are needed to test the library.
