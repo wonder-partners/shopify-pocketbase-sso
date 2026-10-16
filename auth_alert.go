@@ -5,14 +5,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/routine"
 )
 
-// Mark only this integration's auth transactions. Other auth methods keep
-// PocketBase's normal alert delivery behavior, even if the host wraps them in
-// its own transaction.
-type shopifyAuthTransaction struct {
-	core.App
-	original core.App
-}
-
 func deferShopifyAuthAlert(e *core.MailerRecordEvent) error {
 	tx, ok := e.App.(*shopifyAuthTransaction)
 	if !ok {

@@ -8,7 +8,33 @@ import (
 
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/hook"
 )
+
+// Track response scheduling and deferred alerts only for Shopify transactions.
+type shopifyAuthTransaction struct {
+	core.App
+	original          core.App
+	responseScheduled bool
+}
+
+// PocketBase writes the native auth response after commit. Wrap its finalizer
+// after all registered auth hooks so a hook that skips Next cannot mark the
+// response as scheduled. Keep the wrapper local to this request's app.
+func (tx *shopifyAuthTransaction) OnRecordAuthRequest(tags ...string) *hook.TaggedHook[*core.RecordAuthRequestEvent] {
+	local := &hook.Hook[*core.RecordAuthRequestEvent]{}
+	local.BindFunc(func(e *core.RecordAuthRequestEvent) error {
+		finalizer := e.Event
+		return tx.App.OnRecordAuthRequest(tags...).Trigger(e, func(e *core.RecordAuthRequestEvent) error {
+			err := finalizer.Next()
+			if err == nil && !e.Written() {
+				tx.responseScheduled = true
+			}
+			return err
+		})
+	})
+	return hook.NewTaggedHook(local, tags...)
+}
 
 // PocketBase may retain Shopify's provider configuration across restarts.
 // Filter only Shopify while discovery is pending; all native methods and
@@ -72,7 +98,8 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 	var actionErr error
 	rejectedResponse := errors.New("OAuth hook wrote an error response")
 	err := originalApp.RunInTransaction(func(tx core.App) error {
-		e.App = &shopifyAuthTransaction{App: tx, original: originalApp}
+		authTx := &shopifyAuthTransaction{App: tx, original: originalApp}
+		e.App = authTx
 		actionErr = action()
 		// Exact equality prevents a joined MFA + policy error from committing.
 		if actionErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
@@ -80,6 +107,11 @@ func transactionalAuthResponse(e *core.RequestEvent, action func() error) error 
 		}
 		if actionErr != nil {
 			return actionErr
+		}
+		// A hook can stop the chain with nil without producing a response.
+		// Reject it before commit so the resulting HTTP 500 leaves no changes.
+		if !captured.Written() && !authTx.responseScheduled {
+			return e.InternalServerError("PocketBase auth response was not completed.", nil)
 		}
 		if captured.status >= http.StatusBadRequest {
 			return rejectedResponse

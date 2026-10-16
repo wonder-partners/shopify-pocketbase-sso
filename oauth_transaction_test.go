@@ -17,7 +17,7 @@ import (
 )
 
 func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
-	for _, stage := range []string{"oauth_before", "oauth_after", "early_oauth_after", "auth_before", "auth_after", "enrich", "auth_rule", "http_error"} {
+	for _, stage := range []string{"oauth_before", "oauth_after", "early_oauth_after", "oauth_stop", "auth_before", "auth_after", "auth_stop", "enrich", "auth_rule", "http_error"} {
 		t.Run(stage, func(t *testing.T) {
 			f := setup(t, "email")
 			f.login()
@@ -30,13 +30,16 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 			f.mock.ProfileEmail = "changed@example.test"
 
 			switch stage {
-			case "oauth_before", "oauth_after", "early_oauth_after":
+			case "oauth_before", "oauth_after", "early_oauth_after", "oauth_stop":
 				priority := 0
 				if stage == "early_oauth_after" {
 					priority = -2000
 				}
 				f.app.OnRecordAuthWithOAuth2Request("users").Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
 					Priority: priority, Func: func(e *core.RecordAuthWithOAuth2RequestEvent) error {
+						if stage == "oauth_stop" {
+							return nil
+						}
 						if stage != "oauth_before" {
 							if err := e.Next(); err != nil {
 								return err
@@ -45,8 +48,11 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 						return e.ForbiddenError("OAuth denied by the project.", nil)
 					},
 				})
-			case "auth_before", "auth_after", "http_error":
+			case "auth_before", "auth_after", "auth_stop", "http_error":
 				f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+					if stage == "auth_stop" {
+						return nil
+					}
 					if stage == "auth_after" {
 						if err := e.Next(); err != nil {
 							return err
@@ -75,6 +81,9 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 			if stage == "enrich" {
 				status = http.StatusBadRequest
 			}
+			if stage == "oauth_stop" || stage == "auth_stop" {
+				status = http.StatusInternalServerError
+			}
 			f.expect(result, status)
 			after, err := f.app.FindRecordById("users", before.Id)
 			if err != nil {
@@ -91,19 +100,25 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 }
 
 func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
-	for _, stage := range []string{"oauth_after", "auth_before", "auth_after", "auth_rule", "identity_storage"} {
+	for _, stage := range []string{"oauth_after", "oauth_stop", "auth_before", "auth_after", "auth_stop", "auth_rule", "identity_storage"} {
 		t.Run(stage, func(t *testing.T) {
 			f := setup(t, "")
 			switch stage {
-			case "oauth_after":
+			case "oauth_after", "oauth_stop":
 				f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
+					if stage == "oauth_stop" {
+						return nil
+					}
 					if err := e.Next(); err != nil {
 						return err
 					}
 					return e.ForbiddenError("OAuth denied by the project.", nil)
 				})
-			case "auth_before", "auth_after":
+			case "auth_before", "auth_after", "auth_stop":
 				f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+					if stage == "auth_stop" {
+						return nil
+					}
 					if stage == "auth_after" {
 						if err := e.Next(); err != nil {
 							return err
@@ -124,7 +139,7 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 			}
 			f.loginShop()
 			status := http.StatusForbidden
-			if stage == "identity_storage" {
+			if stage == "identity_storage" || stage == "oauth_stop" || stage == "auth_stop" {
 				status = http.StatusInternalServerError
 			}
 			f.expect(f.completeCallback(f.authorize(false)), status)
@@ -136,6 +151,27 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShopifyAuthHookCanWriteItsOwnResponse(t *testing.T) {
+	f := setup(t, "email")
+	f.login()
+	_, user := f.authRecord()
+	f.mock.Fault = ""
+	f.mock.ProfileEmail = "changed@example.test"
+	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
+		return e.NoContent(http.StatusNoContent)
+	})
+	f.loginShop()
+	f.expect(f.completeCallback(f.authorize(false)), http.StatusNoContent)
+	after, err := f.app.FindRecordById("users", user.Id)
+	if err != nil || after.Email() != f.mock.ProfileEmail || !after.Verified() {
+		t.Fatal("custom HTTP response did not commit the accepted profile", err)
+	}
+	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
+		t.Fatal("custom HTTP response lost the Shopify link", err)
+	}
+	privateAccount(f, user.Id)
 }
 
 func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
