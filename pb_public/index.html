@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Studio · Connexion Shopify</title>
+  <style>
+:root { font-family: system-ui, sans-serif; color: #192c29; background: #f3f5f3; line-height: 1.6; color-scheme: light; }
+body { margin: 0; padding: 48px 20px; }
+main { max-width: 660px; margin: auto; padding: 32px; background: white; border: 1px solid #dce3df; border-radius: 12px; }
+h1 { line-height: 1.2; font-size: 2rem; }
+.eyebrow { color: #50665e; font-size: .85rem; }
+#status { padding: 16px; background: #edf4ef; border-left: 3px solid #347355; overflow-wrap: anywhere; }
+#account { overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
+button { font: inherit; padding: 10px 16px; border: 1px solid #50665e; border-radius: 6px; background: white; color: inherit; cursor: pointer; }
+#login { background: #215c42; color: white; border-color: #215c42; }
+button:hover:enabled { filter: brightness(.92); }
+button:focus-visible { outline: 3px solid #3b77b3; outline-offset: 3px; }
+button:disabled { opacity: .5; cursor: default; }
+.note { color: #50665e; font-size: .9rem; }
+@media (max-width: 480px) { body { padding: 20px 12px; } main { padding: 20px; } button { width: 100%; } }
+  </style>
+  <script type="module">
+import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
+
+const pb = new PocketBase(window.location.origin);
+const redirectURL = new URL('/auth/callback', window.location.origin).href;
+const status = document.getElementById('status');
+const account = document.getElementById('account');
+const buttons = ['login', 'silent', 'verify', 'logout'].map(id => document.getElementById(id));
+
+// Kept identical to the tested README example.
+async function loginWithShopify(silent = false) {
+  const methods = await pb.collection('users').listAuthMethods();
+  const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+  if (!provider) throw new Error('Shopify non configuré.');
+
+  sessionStorage.setItem('shopify.oauth', JSON.stringify({
+    state: provider.state,
+    verifier: provider.codeVerifier,
+    expires: Date.now() + 5 * 60 * 1000,
+  }));
+
+  const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
+  if (silent) url.searchParams.set('prompt', 'none');
+  location.assign(url.href);
+}
+
+async function completeShopifyLogin() {
+  const params = new URLSearchParams(location.search);
+  history.replaceState(null, '', location.pathname);
+
+  const saved = sessionStorage.getItem('shopify.oauth');
+  sessionStorage.removeItem('shopify.oauth');
+  const flow = JSON.parse(saved || 'null');
+
+  if (!flow || !Number.isFinite(flow.expires) ||
+      flow.expires <= Date.now() || flow.state !== params.get('state')) {
+    throw new Error('Retour Shopify invalide ou expiré.');
+  }
+
+  if (params.has('error')) return { error: params.get('error') };
+  const code = params.get('code');
+  if (!code) throw new Error('Code Shopify manquant.');
+
+  // Empêcher la liaison avec un autre compte déjà connecté.
+  pb.authStore.clear();
+  return pb.collection('users').authWithOAuth2Code(
+    'shopify', code, flow.verifier, redirectURL,
+  );
+}
+
+function renderAccount() {
+  account.hidden = !pb.authStore.isValid;
+  account.textContent = pb.authStore.isValid ? `Compte studio : ${pb.authStore.record?.email || ''}` : '';
+  document.getElementById('verify').disabled = !pb.authStore.isValid;
+  document.getElementById('logout').disabled = !pb.authStore.isValid;
+}
+
+async function verifyAccess() {
+  try {
+    await pb.collection('users').authRefresh();
+    await pb.collection('users').getOne(pb.authStore.record.id);
+    status.textContent = 'API PocketBase : accès confirmé avec le SDK officiel.';
+  } catch (error) {
+    if (error.status === 401 || error.status === 403) pb.authStore.clear();
+    throw error;
+  }
+}
+
+function showError(error) {
+  // Never render/log SDK error objects: they can contain request credentials.
+  if (error.response?.mfaId) {
+    pb.authStore.clear();
+    status.textContent = 'Shopify a validé le premier facteur. PocketBase demande un second facteur MFA, non pris en charge par cette page de test.';
+  } else if (error.status === 409) {
+    status.textContent = 'Conflit avec un compte existant. Aucune fusion automatique ne sera effectuée.';
+  } else {
+    status.textContent = 'Connexion ou vérification impossible. Le retour peut être invalide ou expiré. Vous pouvez réessayer avec le bouton de connexion.';
+  }
+}
+
+async function run(action) {
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await action();
+  } catch (error) {
+    showError(error);
+  } finally {
+    buttons.forEach(button => { button.disabled = false; });
+    renderAccount();
+  }
+}
+
+document.getElementById('login').addEventListener('click', () => run(() => loginWithShopify(false)));
+document.getElementById('silent').addEventListener('click', () => run(() => loginWithShopify(true)));
+document.getElementById('verify').addEventListener('click', () => run(verifyAccess));
+document.getElementById('logout').addEventListener('click', () => run(() => {
+  pb.authStore.clear();
+  sessionStorage.removeItem('shopify.oauth');
+  history.replaceState(null, '', '/');
+  status.textContent = 'Déconnecté du studio sur ce navigateur. La session Shopify reste indépendante.';
+}));
+
+async function initialize() {
+  if (location.pathname === '/auth/callback') {
+    const result = await completeShopifyLogin();
+    if (result.error) {
+      const expected = ['login_required', 'interaction_required', 'consent_required'];
+      status.textContent = expected.includes(result.error)
+        ? 'Shopify demande une connexion ou un consentement. Utilisez le bouton de connexion.'
+        : result.error === 'access_denied'
+          ? 'Connexion Shopify annulée. Vous pouvez réessayer.'
+          : 'Shopify a refusé la connexion. Vous pouvez réessayer.';
+      return;
+    }
+    await verifyAccess();
+    history.replaceState(null, '', '/');
+  } else if (pb.authStore.isValid) {
+    await verifyAccess();
+  } else {
+    pb.authStore.clear();
+    status.textContent = 'Tentative de connexion silencieuse avec Shopify…';
+    await loginWithShopify(true);
+  }
+}
+
+await run(initialize);
+  </script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Studio / Test de connexion</p>
+    <h1>Connexion Shopify</h1>
+    <p>Utilisez votre compte client Shopify pour accéder au studio.</p>
+    <p id="status" role="status" aria-live="polite">Vérification de la connexion…</p>
+    <p id="account" hidden></p>
+    <div class="actions">
+      <button id="login" type="button" disabled>Se connecter avec Shopify</button>
+      <button id="silent" type="button" disabled>Tester la connexion silencieuse</button>
+      <button id="verify" type="button" disabled>Vérifier l'accès API</button>
+      <button id="logout" type="button" disabled>Se déconnecter du studio</button>
+    </div>
+    <p class="note">À l'arrivée sans session studio, une tentative silencieuse est effectuée. Shopify peut demander une connexion ou un consentement.</p>
+    <p class="note">La déconnexion est locale au studio. Elle ne déconnecte pas Shopify et ne révoque pas les copies du token PocketBase.</p>
+    <noscript>Activez JavaScript pour utiliser la connexion Shopify.</noscript>
+  </main>
+</body>
+</html>

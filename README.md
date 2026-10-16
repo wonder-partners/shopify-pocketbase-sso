@@ -11,13 +11,36 @@ Le module Go `studio-sso` et le package `internal/studio` restent en place. Aucu
 - Le fournisseur Go échange le vrai code Shopify, valide l'ID token et récupère l'identifiant client et l'e-mail.
 - PocketBase crée ou retrouve le compte `users`, conserve la liaison dans `_externalAuths` et applique ses règles, hooks, MFA et enrichissements natifs.
 
-Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. L'intégration ne fournit aucune page HTML, aucun SDK embarqué et aucune API de session parallèle.
+Il n'existe plus de `/api/shopify/auth/start`, de `/api/shopify/auth/complete`, de cookie OAuth, ni de transactions de connexion stockées en mémoire côté serveur. Le package `internal/studio` ne fournit aucune page HTML ni API de session parallèle. L'hôte sert désormais une page de test minimale dans `pb_public`.
 
 Le state est désormais vérifié par le frontend, pas par le backend. La possession du verifier PKCE protège l'échange du code. Les codes à usage unique et leur expiration sont contrôlés par Shopify. Le délai de cinq minutes dans l'exemple est un contrôle local supplémentaire, pas une expiration imposée par notre serveur.
 
 ## Configuration et hôte Go
 
 `main.go` reste un hôte PocketBase minimal. Il initialise `studio.New` dans `OnServe`, puis appelle `Register`. Ce dernier ne déclare aucune route : il adapte uniquement les requêtes OAuth natives.
+
+L'hôte enregistre aussi `apis.Static` pour servir `pb_public`, sans fallback HTML global. Seul `/auth/callback` sert explicitement la page d'accueil pour traiter le retour OAuth. Les préfixes API, admin et les anciens chemins `/studio` ne sont pas servis par le frontend. Le service statique reste dans `main.go`.
+
+## Page de test locale
+
+`pb_public/index.html` contient tout le CSS et le JavaScript de la page. Le SDK officiel est importé depuis jsDelivr, fixé à `0.28.1`. Aucune copie du SDK n'est conservée dans `pb_public`. La CSP autorise ce fichier CDN précis et les empreintes SHA-256 des blocs inline. Si ces blocs changent, mettre à jour leurs empreintes dans `main.go` ; les tests signalent un décalage. Le navigateur doit pouvoir joindre ce CDN ; les tests Node utilisent la même version installée dans `integration`.
+
+La page reprend le flux [Manual code exchange de PocketBase](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), avec les deux fonctions testées ci-dessous. Une tentative silencieuse est faite à l'arrivée sans session locale. Le callback ne la relance jamais automatiquement. Les boutons permettent une connexion interactive, un test silencieux explicite, la vérification de l'API et la déconnexion locale. Après connexion, la même instance du SDK appelle `authRefresh()` puis `getOne()` sur son propre compte. Après succès, l'adresse revient sur `/` pour permettre le rechargement avec l'auth store restauré.
+
+Les erreurs attendues de `prompt=none` proposent le bouton de connexion. Une MFA est signalée, sans interface de second facteur. Les tokens, codes OAuth, verifiers et identifiants Shopify bruts ne sont pas affichés. Le callback est servi en `no-store`, avec `Referrer-Policy: no-referrer` et une CSP adaptée au CDN.
+
+Lancement depuis la racine du dépôt, lorsque les URL de test sont alignées :
+
+```powershell
+. ./config.local.ps1
+go run . serve --http=127.0.0.1:8090 --dir=D:/Workspaces/shopify-pocketbase-sso/pb_data --publicDir=D:/Workspaces/shopify-pocketbase-sso/pb_public
+```
+
+`--publicDir` vaut `./pb_public` par défaut, relatif au répertoire de travail, y compris avec un binaire placé dans `bin`. Utiliser un chemin absolu évite toute ambiguïté.
+
+Le frontend utilise l'origine courante et `/auth/callback`. Avant un login réel, aligner exactement cette URL, `SHOPIFY_REDIRECT_URL` et `[customer_authentication].redirect_uris`. La configuration locale et l'app Shopify utilisent encore `/studio/callback` ; cette étape n'a modifié ni l'une ni l'autre et n'a pas démarré le backend sur les données locales réelles.
+
+## Configuration du fournisseur
 
 | Paramètre Go | Variable d'environnement | Rôle |
 | --- | --- | --- |
@@ -102,9 +125,9 @@ Utilisation :
 - Gérer les erreurs des promesses dans l'interface. Ne pas afficher directement des paramètres OAuth arbitraires, ni journaliser le code, le verifier ou les tokens.
 - Après un succès, le SDK a déjà alimenté `pb.authStore`. Les appels CRUD, le refresh et le realtime utilisent l'authentification native.
 
-Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics ni ressources tierces. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
+Le frontend doit servir le callback avec `Cache-Control: no-store` et `Referrer-Policy: no-referrer`, sans analytics, avec le seul SDK externe fixé depuis le CDN. Il doit effacer le code de l'adresse avant tout traitement. Le `sessionStorage` contient temporairement un secret PKCE : protéger ce frontend contre les injections de script est indispensable.
 
-Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. Il n'est pas servi par le backend.
+Le code de cet exemple est exécuté tel quel par le test d'intégration avec le SDK officiel. Les mêmes fonctions sont présentes dans `pb_public/index.html` ; un test vérifie leur parité.
 
 ## Sécurité et limites
 

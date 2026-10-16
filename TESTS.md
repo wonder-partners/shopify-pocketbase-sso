@@ -10,10 +10,13 @@ go vet ./...
 go build ./...
 node --check integration/oauth.mjs
 node --check integration/sdk.mjs
+node --check integration/frontend.mjs
 git diff --check
 ```
 
 Résultat du 15 octobre 2026 : succès des 49 groupes de tests du cœur, dont les deux intégrations SDK. Couverture du cœur : 86,8 %. Les cinq groupes des migrations historiques passent aussi, avec une couverture de 81,0 %. `go vet`, la compilation et les vérifications JavaScript passent.
+
+Résultat du 16 octobre 2026 après ajout du frontend inline : suite complète réussie avec `RUN_JS_SDK_TEST=1`, dont les trois tests racine et les trois intégrations SDK au total. Couvertures : hôte 48,4 %, cœur 86,8 %, migrations 81,0 %. `go vet`, `go build`, syntaxe des trois scripts Node et `git diff --check` passent. Le module inline HTML est compilé et exécuté par le test frontend, puis vérifié dans le navigateur avec le SDK CDN. Les changements sont locaux, non commités, sur la base de HEAD `75d85a7`.
 
 ## Nouveau contrat testé
 
@@ -67,7 +70,19 @@ Node reçoit une simulation du contrat Web Storage et de la navigation. Ce n'est
 
 `integration/sdk.mjs` vérifie aussi les règles CRUD et le renouvellement avec un compte Shopify et un compte natif. Les deux tests SDK nécessitent `RUN_JS_SDK_TEST=1`.
 
-## Backend local et données existantes
+## Frontend hôte ajouté le 16 octobre 2026
+
+Trois tests racine couvrent le service statique et la page :
+
+- `TestFrontendRoutes` vérifie la page HTML unique et le callback, les en-têtes CSP/no-store/no-referrer et les empreintes des blocs inline, l'absence de cookies ou de réflexion des paramètres OAuth, les 404 des anciennes routes et des fichiers absents, et la conservation des routes API/admin natives.
+- `TestFrontendMatchesREADMEAndPinnedSDK` vérifie que les deux fonctions OAuth de `pb_public/index.html` sont identiques au README et que l'import CDN utilise la version fixée dans `integration/package.json`, actuellement `0.28.1`.
+- `TestFrontendWithOfficialSDK`, activé avec `RUN_JS_SDK_TEST=1`, exécute tout le module inline de `index.html` via `integration/frontend.mjs`, avec le vrai SDK et les serveurs HTTP simulés. Il vérifie les parcours silencieux et interactif, la consommation du stockage et le nettoyage de l'adresse avant échange, le refresh/lecture native, la persistance, le logout local sans boucle, la reconnexion silencieuse, le rejeu et le mauvais state, le rendu sûr des erreurs, le signalement MFA et les conflits sans fusion. Le DOM, la navigation et Web Storage sont simulés dans ce test Node. La MFA et le conflit sont injectés pour vérifier leur affichage ; les tests du cœur vérifient leur application côté serveur.
+
+Une vérification dans le navigateur collaboratif T3 a aussi utilisé des serveurs de fixture et une base temporaire. Le SDK a effectivement été chargé depuis l'URL CDN fixée, avec la CSP finale. L'échange OAuth simulé, `authRefresh` et la lecture du compte ont réussi. Rechargement avec auth store restauré, logout local et reconnexion silencieuse après logout ont été vérifiés. Le retour silencieux anonyme avec proposition du bouton a aussi été observé avant le passage au CDN. Le fournisseur simulé n'a pas de formulaire de login : sa session de test a été ouverte par un POST sur son endpoint `/login`, puis la navigation OAuth a repris. Aucun code e-mail réel n'est intervenu.
+
+Cette vérification n'est pas un test contre Shopify, Safari ou un appareil mobile. Les serveurs temporaires ont été arrêtés et le helper temporaire retiré. Aucune base réelle ni configuration Shopify n'a été modifiée. Le frontend utilise `/auth/callback` ; l'alignement des configurations encore sur `/studio/callback` et le test HTTPS réel restent à faire.
+
+## Backend local et données existantes, historique du 15 octobre
 
 Le nouveau binaire `bin/pocketbase-native-redirect.exe` a remplacé le backend local sur `127.0.0.1:8090`. Les contrôles HTTP confirment :
 
