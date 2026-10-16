@@ -147,8 +147,12 @@ Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-refer
 
 The UI must handle errors and MFA challenges. `pb.authStore.clear()` signs out of the application without signing out of Shopify. The `authWithOAuth2` popup flow is not supported.
 
-The SDK test executes these functions directly. The [local demo](../shopify-pocketbase-sso-demo/README.md) is a separate project.
+The SDK test executes these functions directly.
 
 ## Tests
 
 `mise run check` runs the Go tests, the official SDK OAuth test, Go static analysis and compilation. Mise and Node are development tools; only Go is needed to use the library. See the [testing guide](tests/README.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

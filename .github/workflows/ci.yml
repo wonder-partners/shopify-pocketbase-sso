@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.1'
+          cache: npm
+          cache-dependency-path: tests/sdk/package-lock.json
+      - run: npm ci --prefix tests/sdk --ignore-scripts --no-audit --no-fund
+      - run: test -z "$(gofmt -l .)"
+      - run: go mod tidy -diff
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go build ./...
+      - run: node --check tests/sdk/oauth.test.mjs
+      - run: go test ./... -count=1 -cover
+        env:
+          RUN_JS_SDK_TEST: '1'
