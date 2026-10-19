@@ -52,7 +52,17 @@ go get github.com/Sov3rain/shopify-pocketbase-sso
 
 ## Integration
 
-Initialize the service in `OnServe`, after the project's migrations:
+Set these environment variables in the shell or deployment platform that starts your PocketBase application. Replace the example values with your store, registered callback URL and app Client ID:
+
+```dotenv
+SHOPIFY_SHOP_URL=https://my-store.myshopify.com
+SHOPIFY_REDIRECT_URL=https://my-frontend.example/redirect.html
+SHOPIFY_CLIENT_ID=my-public-client
+```
+
+The example below reads the process environment with `os.Getenv`. Saving these values in a `.env` file alone does not load them into Go; configure your application runner to load that file if you use one. The Client ID is public, and no Shopify client secret is needed.
+
+Initialize the service in `OnServe`, after the project's migrations. The application reads the environment variables and passes their values to the library:
 
 ```go
 package main
@@ -60,6 +70,7 @@ package main
 import (
     "context"
     "log"
+    "os"
 
     shopifysso "github.com/Sov3rain/shopify-pocketbase-sso"
     "github.com/pocketbase/pocketbase"
@@ -70,9 +81,9 @@ func main() {
     app := pocketbase.New()
     app.OnServe().BindFunc(func(e *core.ServeEvent) error {
         sso, err := shopifysso.New(context.Background(), app, shopifysso.Config{
-            ShopURL:        "https://my-store.myshopify.com",
-            RedirectURL:    "https://my-frontend.example/redirect.html",
-            ClientID:       "my-public-client",
+            ShopURL:        os.Getenv("SHOPIFY_SHOP_URL"),
+            RedirectURL:    os.Getenv("SHOPIFY_REDIRECT_URL"),
+            ClientID:       os.Getenv("SHOPIFY_CLIENT_ID"),
             AuthCollection: "users",
         })
         if err != nil {
@@ -138,7 +149,8 @@ const pb = new PocketBase(window.location.origin);
 const redirectURL = new URL('/redirect.html', window.location.origin).href;
 ```
 
-<!-- native-redirect-example:start -->
+This frontend example serves PocketBase and the callback on the current origin. Its computed `redirectURL` must match `SHOPIFY_REDIRECT_URL` exactly. If your frontend and API use different origins, inject their URLs through your frontend framework's build or runtime configuration. Browser JavaScript cannot read the Go process's environment variables directly.
+
 ```javascript
 async function loginWithShopify(silent = false) {
   const methods = await pb.collection('users').listAuthMethods();
@@ -180,8 +192,6 @@ async function completeShopifyLogin() {
   );
 }
 ```
-<!-- native-redirect-example:end -->
-
 Call `loginWithShopify()` on a button click, then `completeShopifyLogin()` on the callback page. The SDK updates `pb.authStore`. To attempt silent sign-in, call `loginWithShopify(true)` once; if it fails, offer interactive sign-in without automatically retrying.
 
 Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Protect PKCE storage from script injection and do not log codes or tokens. The `Origin` header must match the origin of `RedirectURL`; configure CORS if the frontend and API use different origins.
