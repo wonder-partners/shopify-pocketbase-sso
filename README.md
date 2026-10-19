@@ -52,6 +52,8 @@ go get github.com/Sov3rain/shopify-pocketbase-sso
 
 ## Integration
 
+### 1. Configure the environment
+
 Set these environment variables in the shell or deployment platform that starts your PocketBase application. Replace the example values with your store, registered callback URL and app Client ID:
 
 ```dotenv
@@ -60,9 +62,11 @@ SHOPIFY_REDIRECT_URL=https://my-frontend.example/redirect.html
 SHOPIFY_CLIENT_ID=my-public-client
 ```
 
-The example below reads the process environment with `os.Getenv`. Saving these values in a `.env` file alone does not load them into Go; configure your application runner to load that file if you use one. The Client ID is public, and no Shopify client secret is needed.
+`os.Getenv` reads the process environment. If you use a `.env` file, configure your application runner to load it; Go does not load it automatically. No Shopify client secret is needed.
 
-Initialize the service in `OnServe`, after the project's migrations. The application reads the environment variables and passes their values to the library:
+### 2. Register the service
+
+Initialize the service in `OnServe`, after your migrations have created the auth collection. The application reads the environment variables and passes their values to the library:
 
 ```go
 package main
@@ -106,37 +110,17 @@ func main() {
 | `AuthCollection` | Existing auth collection name or ID, defaults to `users` |
 | `AllowLoopbackHTTP` | Allows loopback HTTP for tests, disabled by default |
 
-The host project owns its fields and rules. The library enables the `shopify` provider and creates the private `_shopifyIdentities` collection. Provider configuration reads and updates the auth collection in one transaction to preserve concurrent host changes. The auth collection's create rule determines whether a first login can create an account.
+### 3. Check account rules and startup behavior
 
-`New` validates local configuration and database setup synchronously, then discovers Shopify's endpoints in the background. A discovery outage does not prevent PocketBase from starting. Until discovery succeeds, `listAuthMethods()` omits Shopify while preserving other auth methods, and explicit Shopify login requests return HTTP 503 with `Retry-After`.
+Create the auth collection before initializing the service. The example uses `users`; change `AuthCollection` if your collection has another name. Your application owns its fields and access rules. In particular, its create rule controls whether a first Shopify login can create an account.
 
-Each discovery attempt has a 20-second deadline, with retry delays increasing from 1 second to a maximum of 60 seconds. The provider becomes available automatically after discovery succeeds. The persistent provider configuration and hooks are installed synchronously by `New`; discovery publishes its endpoints in memory without acquiring the database writer. `listAuthMethods()` uses the discovered authorization endpoint while preserving PocketBase's state, PKCE and nonce parameters. The context passed to `New` controls the service lifetime; cancellation or PocketBase termination stops pending requests and retries, even while another transaction holds the database writer. Use a lifetime context, such as `context.Background()` in the example, rather than a short startup timeout.
+The library enables the `shopify` provider and creates a private `_shopifyIdentities` collection. Accounts are linked by Shopify identity. An existing account with the same email is not merged automatically; the login returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
 
-The native `fields` query parameter on `listAuthMethods()` is applied after Shopify filtering and URL rewriting, including for the legacy `authProviders` response.
+Shopify endpoints are discovered in the background. If Shopify is unavailable at startup, PocketBase still starts and retries discovery automatically. Until discovery succeeds, Shopify is absent from `listAuthMethods()` and direct Shopify login requests return HTTP 503 with `Retry-After`.
 
-PocketBase's native `apis.Gzip()` can be registered before or after `Service.Register`. The auth-methods middleware runs at priority 1 so it rewrites JSON before native compression. Custom compression middleware should run at a lower priority to wrap the rewritten response.
+Use a context that lasts as long as the service, such as `context.Background()` in the example. A short startup timeout would also stop discovery retries.
 
-Accounts are linked by Shopify identity. Matching email addresses do not merge accounts; a conflict returns HTTP 409. Shopify tokens are neither stored nor exposed to the frontend.
-
-Deleting a Shopify link, through the records API or a native security purge, also removes its matching private identity in the same transaction. The user account remains available through its other authentication methods. A subsequent Shopify login cannot recover that account through the deleted identity; an email conflict still returns HTTP 409.
-
-Unlink request responses, including custom responses written by project hooks, are buffered until the transaction completes. A storage or commit failure discards any pending success response; a project error response rolls back both identity deletions.
-
-This also applies when a project middleware opens the transaction before the unlink request. A written HTTP rejection propagates to that transaction's owner to trigger rollback. The native 204 response and custom hook responses remain buffered until the outer transaction finishes.
-
-When a previously unverified email becomes verified, PocketBase revokes the old OAuth links and refresh tokens. Only an accepted Shopify authentication can restore its current Shopify link and private identity within that same transaction. Native email verification or account recovery leaves the old Shopify identity revoked.
-
-Verification also invalidates existing PocketBase sessions when a legacy private Shopify identity has no native OAuth link. Token invalidation and private identity deletion share the verification transaction; a failed revocation rolls both back.
-
-Profile synchronization and identity links are committed together after the OAuth hook chain accepts the request. The native JSON response is serialized before commit and sent afterwards; a serialization failure rolls back the database changes. Before commit, an authentication rule or request hook rejection also rolls back these changes. A hook that stops the chain without writing an HTTP response causes a rollback and returns HTTP 500. A native MFA challenge accepts the Shopify factor and commits the profile and challenge while the second factor is still pending. Hooks must use their event's `e.App` for database operations to participate in the transaction; external side effects cannot be rolled back.
-
-The native MFA response remains pending until the hook chain completes. A project hook that handles `apis.ErrMFA` and writes an error response replaces the challenge entirely, preserving its status, headers and body while rolling back the profile, links and MFA challenge.
-
-For Shopify logins, native new-device email alerts and their mail hooks run asynchronously after a successful commit. Slow mail delivery holds neither the database transaction nor the login response. A rollback discards the alert; delivery failures are logged without rejecting the login. Other auth methods keep PocketBase's normal alert behavior.
-
-Project hooks may nest `e.App.RunInTransaction` calls using the callback's app for subsequent hooks. Shopify response tracking and deferred alerts remain attached to the same authentication transaction.
-
-When a project middleware starts a transaction before Shopify authentication, the response waits for that outer transaction to commit. A rollback discards the pending JWT or MFA challenge. An accepted MFA first factor returns no error to the transaction owner so its challenge can commit; the client still receives PocketBase's HTTP 401 MFA response after commit. Middleware must return its policy errors to the transaction owner to trigger rollback.
+For transaction guarantees, MFA, unlinking, email verification and custom hooks or middleware, see the [integration reference](docs/integration.md).
 
 ## Minimal frontend example
 
@@ -151,6 +135,7 @@ const redirectURL = new URL('/redirect.html', window.location.origin).href;
 
 This frontend example serves PocketBase and the callback on the current origin. Its computed `redirectURL` must match `SHOPIFY_REDIRECT_URL` exactly. If your frontend and API use different origins, inject their URLs through your frontend framework's build or runtime configuration. Browser JavaScript cannot read the Go process's environment variables directly.
 
+<!-- native-redirect-example:start -->
 ```javascript
 async function loginWithShopify(silent = false) {
   const methods = await pb.collection('users').listAuthMethods();
@@ -192,6 +177,8 @@ async function completeShopifyLogin() {
   );
 }
 ```
+<!-- native-redirect-example:end -->
+
 Call `loginWithShopify()` on a button click, then `completeShopifyLogin()` on the callback page. The SDK updates `pb.authStore`. To attempt silent sign-in, call `loginWithShopify(true)` once; if it fails, offer interactive sign-in without automatically retrying.
 
 Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Protect PKCE storage from script injection and do not log codes or tokens. The `Origin` header must match the origin of `RedirectURL`; configure CORS if the frontend and API use different origins.
