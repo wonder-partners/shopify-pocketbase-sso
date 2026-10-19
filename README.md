@@ -23,7 +23,7 @@ Tested with PocketBase `0.40.5` and Go `1.27.2`. One store and one auth collecti
    ```toml
    [access_scopes]
    scopes = "customer_read_customers"
-
+   
    [customer_authentication]
    redirect_uris = ["https://my-frontend.example/redirect.html"]
    ```
@@ -124,68 +124,148 @@ For transaction guarantees, MFA, unlinking, email verification and custom hooks 
 
 ## Minimal frontend example
 
-Use the official PocketBase SDK. Replace `users` with your chosen collection and serve the callback at the URL configured in both `RedirectURL` and Shopify.
+Following PocketBase's [manual OAuth2 code exchange example](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), use two pages: one to start login and one to handle the callback. This Shopify provider uses full-page redirects with PKCE; PocketBase's `authWithOAuth2` popup flow is not supported.
 
-```javascript
-import PocketBase from 'pocketbase';
+Save these files in your application's `pb_public` directory. PocketBase serves them at `/index.html` and `/redirect.html`. Serve the application over HTTPS and set `SHOPIFY_REDIRECT_URL` to that origin followed by `/redirect.html`. Register the exact same URL in Shopify.
 
-const pb = new PocketBase(window.location.origin);
-const redirectURL = new URL('/redirect.html', window.location.origin).href;
+Both pages use the current origin for PocketBase and the callback. If your API is hosted elsewhere, inject the API and callback URLs through your frontend's build or runtime configuration. Browser JavaScript cannot read the Go process's environment variables.
+
+The examples use the `users` collection and a pinned version of the official PocketBase SDK. Replace `users` in both files if your auth collection has another name.
+
+### `pb_public/index.html`
+
+The login buttons start either interactive login or a silent attempt using an existing Shopify session. Errors appear on the page without exposing codes or tokens.
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Shopify sign-in</title>
+</head>
+<body>
+  <h1>Sign in</h1>
+  <button id="login" type="button">Sign in with Shopify</button>
+  <button id="silent" type="button">Use existing Shopify session</button>
+  <button id="logout" type="button">Sign out of this application</button>
+  <p id="status" role="status"></p>
+
+  <script type="module">
+    import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
+
+    const pb = new PocketBase(location.origin);
+    const redirectURL = new URL('/redirect.html', location.origin).href;
+    const status = document.getElementById('status');
+    status.textContent = pb.authStore.isValid ? 'You are signed in.' : 'You are signed out.';
+
+    async function loginWithShopify(silent = false) {
+      const methods = await pb.collection('users').listAuthMethods();
+      const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+      if (!provider) throw new Error('Shopify is not configured.');
+
+      sessionStorage.setItem('shopify.oauth', JSON.stringify({
+        state: provider.state,
+        verifier: provider.codeVerifier,
+        expires: Date.now() + 5 * 60 * 1000,
+      }));
+
+      const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
+      if (silent) url.searchParams.set('prompt', 'none');
+      location.assign(url.href);
+    }
+
+    async function startLogin(silent) {
+      try {
+        await loginWithShopify(silent);
+      } catch {
+        status.textContent = 'Unable to start Shopify sign-in. Please try again.';
+      }
+    }
+
+    document.getElementById('login').addEventListener('click', () => startLogin(false));
+    document.getElementById('silent').addEventListener('click', () => startLogin(true));
+    document.getElementById('logout').addEventListener('click', () => {
+      pb.authStore.clear();
+      status.textContent = 'You are signed out of this application.';
+    });
+  </script>
+</body>
+</html>
 ```
 
-This frontend example serves PocketBase and the callback on the current origin. Its computed `redirectURL` must match `SHOPIFY_REDIRECT_URL` exactly. If your frontend and API use different origins, inject their URLs through your frontend framework's build or runtime configuration. Browser JavaScript cannot read the Go process's environment variables directly.
+### `pb_public/redirect.html`
 
-<!-- native-redirect-example:start -->
-```javascript
-async function loginWithShopify(silent = false) {
-  const methods = await pb.collection('users').listAuthMethods();
-  const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
-  if (!provider) throw new Error('Shopify is not configured.');
+This page checks the saved state and PKCE data, then exchanges the code through PocketBase. If Shopify returns `login_required`, the user can return to the login page and choose interactive sign-in. It does not retry silently in a loop.
 
-  sessionStorage.setItem('shopify.oauth', JSON.stringify({
-    state: provider.state,
-    verifier: provider.codeVerifier,
-    expires: Date.now() + 5 * 60 * 1000,
-  }));
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Shopify sign-in result</title>
+</head>
+<body>
+  <h1>Shopify sign-in</h1>
+  <p id="status" role="status">Completing sign-in...</p>
+  <a href="/index.html">Return to the sign-in page</a>
 
-  const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
-  if (silent) url.searchParams.set('prompt', 'none');
-  location.assign(url.href);
-}
+  <script type="module">
+    import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
 
-async function completeShopifyLogin() {
-  const params = new URLSearchParams(location.search);
-  history.replaceState(null, '', location.pathname);
+    const pb = new PocketBase(location.origin);
+    const redirectURL = new URL('/redirect.html', location.origin).href;
+    const status = document.getElementById('status');
 
-  const saved = sessionStorage.getItem('shopify.oauth');
-  sessionStorage.removeItem('shopify.oauth');
-  const flow = JSON.parse(saved || 'null');
+    async function completeShopifyLogin() {
+      const params = new URLSearchParams(location.search);
+      history.replaceState(null, '', location.pathname);
 
-  if (!flow || !Number.isFinite(flow.expires) ||
-      flow.expires <= Date.now() || flow.state !== params.get('state')) {
-    throw new Error('Invalid or expired Shopify callback.');
-  }
+      const saved = sessionStorage.getItem('shopify.oauth');
+      sessionStorage.removeItem('shopify.oauth');
+      const flow = JSON.parse(saved || 'null');
 
-  if (params.has('error')) return { error: params.get('error') };
-  const code = params.get('code');
-  if (!code) throw new Error('Missing Shopify code.');
+      if (!flow || !Number.isFinite(flow.expires) ||
+          flow.expires <= Date.now() || flow.state !== params.get('state')) {
+        throw new Error('Invalid or expired Shopify callback.');
+      }
 
-  // Prevent linking to another account that is already signed in.
-  pb.authStore.clear();
-  return pb.collection('users').authWithOAuth2Code(
-    'shopify', code, flow.verifier, redirectURL,
-  );
-}
+      if (params.has('error')) return { error: params.get('error') };
+      const code = params.get('code');
+      if (!code) throw new Error('Missing Shopify code.');
+
+      // Prevent linking to another account that is already signed in.
+      pb.authStore.clear();
+      return pb.collection('users').authWithOAuth2Code(
+        'shopify', code, flow.verifier, redirectURL,
+      );
+    }
+
+    try {
+      const result = await completeShopifyLogin();
+      if (result.error === 'login_required') {
+        status.textContent = 'No active Shopify session. Return to the sign-in page and choose "Sign in with Shopify".';
+      } else if (result.error) {
+        status.textContent = 'Shopify did not authorize sign-in. Return to the sign-in page to try again.';
+      } else {
+        status.textContent = 'You are signed in. You can return to the application.';
+      }
+    } catch (error) {
+      status.textContent = error.response?.mfaId
+        ? 'A second authentication factor is required. This minimal example does not implement that step.'
+        : 'Sign-in failed or the callback expired. Return to the sign-in page to try again.';
+    }
+  </script>
+</body>
+</html>
 ```
-<!-- native-redirect-example:end -->
 
-Call `loginWithShopify()` on a button click, then `completeShopifyLogin()` on the callback page. The SDK updates `pb.authStore`. To attempt silent sign-in, call `loginWithShopify(true)` once; if it fails, offer interactive sign-in without automatically retrying.
+Configure your server or reverse proxy to send `Cache-Control: no-store` and `Referrer-Policy: no-referrer` for the callback page. Protect the pages from script injection and do not log codes or tokens. If the API is on another origin, configure CORS; the backend expects the request's `Origin` to match the callback origin.
 
-Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Protect PKCE storage from script injection and do not log codes or tokens. The `Origin` header must match the origin of `RedirectURL`; configure CORS if the frontend and API use different origins.
-
-The UI must handle errors and MFA challenges. `pb.authStore.clear()` signs out of the application without signing out of Shopify. The `authWithOAuth2` popup flow is not supported.
-
-The SDK test executes these functions directly.
+The SDK persists the PocketBase session in `pb.authStore`. Signing out clears that application session and leaves the Shopify session active. If MFA is enabled, extend the callback page with a second-factor form using PocketBase's [MFA flow](https://pocketbase.io/docs/authentication/#multi-factor-authentication).
 
 ## Tests
 

@@ -46,15 +46,48 @@ globalThis.fetch = async (url, options = {}) => {
 };
 
 const pb = new PocketBase(input.url);
-// Execute exactly the public frontend example, rather than a second implementation.
-const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
-const marker = '<!-- native-redirect-example:start -->';
-const example = readme.slice(readme.indexOf(marker) + marker.length)
-  .match(/\x60\x60\x60javascript\s*([\s\S]*?)\x60\x60\x60/)[1];
-const {loginWithShopify, completeShopifyLogin} = new Function(
-  'pb', 'redirectURL', 'sessionStorage', 'location', 'history',
-  example + '\nreturn {loginWithShopify, completeShopifyLogin};',
-)(pb, input.redirectURL, sessionStorage, location, history);
+const redirectURL = input.redirectURL;
+
+// Test-owned browser flow exercising the real PocketBase SDK and HTTP APIs.
+async function loginWithShopify(silent = false) {
+  const methods = await pb.collection('users').listAuthMethods();
+  const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+  if (!provider) throw new Error('Shopify is not configured.');
+
+  sessionStorage.setItem('shopify.oauth', JSON.stringify({
+    state: provider.state,
+    verifier: provider.codeVerifier,
+    expires: Date.now() + 5 * 60 * 1000,
+  }));
+
+  const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
+  if (silent) url.searchParams.set('prompt', 'none');
+  location.assign(url.href);
+}
+
+async function completeShopifyLogin() {
+  const params = new URLSearchParams(location.search);
+  history.replaceState(null, '', location.pathname);
+
+  const saved = sessionStorage.getItem('shopify.oauth');
+  sessionStorage.removeItem('shopify.oauth');
+  const flow = JSON.parse(saved || 'null');
+
+  if (!flow || !Number.isFinite(flow.expires) ||
+      flow.expires <= Date.now() || flow.state !== params.get('state')) {
+    throw new Error('Invalid or expired Shopify callback.');
+  }
+
+  if (params.has('error')) return { error: params.get('error') };
+  const code = params.get('code');
+  if (!code) throw new Error('Missing Shopify code.');
+
+  // Prevent linking to another account that is already signed in.
+  pb.authStore.clear();
+  return pb.collection('users').authWithOAuth2Code(
+    'shopify', code, flow.verifier, redirectURL,
+  );
+}
 
 let shopCookie = '';
 async function authorize() {

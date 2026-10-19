@@ -16,7 +16,7 @@ This installs the Go dependencies and the JavaScript SDK pinned in `sdk/package-
 
 ## OAuth test with the official SDK
 
-`sdk/oauth.test.mjs` executes the frontend functions from the [library README](../README.md#minimal-frontend-example). It checks silent and interactive sign-in, state validation, temporary storage, replay rejection, auth store updates, session persistence and refresh.
+`sdk/oauth.test.mjs` implements its own browser flow against the official PocketBase SDK and the test servers. It does not read or execute the README examples. It checks silent and interactive sign-in, state validation, temporary storage, replay rejection, auth store updates, session persistence and refresh.
 
 `sdk_integration_test.go` starts HTTP servers and temporary SQLite databases, then passes their parameters to the Node script through standard input. The script cannot be run on its own.
 
