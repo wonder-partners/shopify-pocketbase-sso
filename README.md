@@ -124,17 +124,13 @@ For transaction guarantees, MFA, unlinking, email verification and custom hooks 
 
 ## Minimal frontend example
 
-Following PocketBase's [manual OAuth2 code exchange example](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), use two pages: one to start login and one to handle the callback. This Shopify provider uses full-page redirects with PKCE; PocketBase's `authWithOAuth2` popup flow is not supported.
+These two pages follow PocketBase's [manual OAuth2 code exchange example](https://pocketbase.io/docs/authentication/#authenticate-with-oauth2), with an automatic silent login attempt for Shopify. The `authWithOAuth2` popup flow is not supported by this provider.
 
-Save these files in your application's `pb_public` directory. PocketBase serves them at `/index.html` and `/redirect.html`. Serve the application over HTTPS and set `SHOPIFY_REDIRECT_URL` to that origin followed by `/redirect.html`. Register the exact same URL in Shopify.
-
-Both pages use the current origin for PocketBase and the callback. If your API is hosted elsewhere, inject the API and callback URLs through your frontend's build or runtime configuration. Browser JavaScript cannot read the Go process's environment variables.
-
-The examples use the `users` collection and a pinned version of the official PocketBase SDK. Replace `users` in both files if your auth collection has another name.
+Save both files in `pb_public` and serve the application over HTTPS. Set `SHOPIFY_REDIRECT_URL` to `https://your-domain/redirect.html` and register that exact URL in Shopify. The examples use the current origin for PocketBase and the `users` auth collection.
 
 ### `pb_public/index.html`
 
-The login buttons start either interactive login or a silent attempt using an existing Shopify session. Errors appear on the page without exposing codes or tokens.
+If there is no PocketBase session, try Shopify silently. If an interactive login is needed, display the sign-in link.
 
 ```html
 <!doctype html>
@@ -142,54 +138,43 @@ The login buttons start either interactive login or a silent attempt using an ex
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
-  <title>Shopify sign-in</title>
+  <title>Sign in</title>
 </head>
 <body>
-  <h1>Sign in</h1>
-  <button id="login" type="button">Sign in with Shopify</button>
-  <button id="silent" type="button">Use existing Shopify session</button>
-  <button id="logout" type="button">Sign out of this application</button>
-  <p id="status" role="status"></p>
+  <a id="login" hidden>Sign in with Shopify</a>
 
   <script type="module">
     import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
 
     const pb = new PocketBase(location.origin);
     const redirectURL = new URL('/redirect.html', location.origin).href;
-    const status = document.getElementById('status');
-    status.textContent = pb.authStore.isValid ? 'You are signed in.' : 'You are signed out.';
+    const login = document.getElementById('login');
+    const skipSilent = sessionStorage.getItem('shopify.skipSilent') === '1';
+    sessionStorage.removeItem('shopify.skipSilent');
 
-    async function loginWithShopify(silent = false) {
+    if (!pb.authStore.isValid) {
       const methods = await pb.collection('users').listAuthMethods();
       const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
-      if (!provider) throw new Error('Shopify is not configured.');
+      if (!provider) throw new Error('Shopify is not available.');
 
-      sessionStorage.setItem('shopify.oauth', JSON.stringify({
-        state: provider.state,
-        verifier: provider.codeVerifier,
-        expires: Date.now() + 5 * 60 * 1000,
-      }));
+      login.href = provider.authURL + encodeURIComponent(redirectURL);
+      function saveProvider() {
+        sessionStorage.setItem('shopify.oauth', JSON.stringify({
+          ...provider,
+          expires: Date.now() + 5 * 60 * 1000,
+        }));
+      }
+      login.addEventListener('click', saveProvider);
 
-      const url = new URL(provider.authURL + encodeURIComponent(redirectURL));
-      if (silent) url.searchParams.set('prompt', 'none');
-      location.assign(url.href);
-    }
-
-    async function startLogin(silent) {
-      try {
-        await loginWithShopify(silent);
-      } catch {
-        status.textContent = 'Unable to start Shopify sign-in. Please try again.';
+      if (skipSilent) {
+        login.hidden = false;
+      } else {
+        saveProvider();
+        const url = new URL(login.href);
+        url.searchParams.set('prompt', 'none');
+        location.assign(url.href);
       }
     }
-
-    document.getElementById('login').addEventListener('click', () => startLogin(false));
-    document.getElementById('silent').addEventListener('click', () => startLogin(true));
-    document.getElementById('logout').addEventListener('click', () => {
-      pb.authStore.clear();
-      status.textContent = 'You are signed out of this application.';
-    });
   </script>
 </body>
 </html>
@@ -197,7 +182,7 @@ The login buttons start either interactive login or a silent attempt using an ex
 
 ### `pb_public/redirect.html`
 
-This page checks the saved state and PKCE data, then exchanges the code through PocketBase. If Shopify returns `login_required`, the user can return to the login page and choose interactive sign-in. It does not retry silently in a loop.
+Validate the callback, then exchange the code through PocketBase. Returning to the first page skips the silent attempt once, so `login_required` displays the sign-in link instead of causing a redirect loop.
 
 ```html
 <!doctype html>
@@ -206,66 +191,53 @@ This page checks the saved state and PKCE data, then exchanges the code through 
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>Shopify sign-in result</title>
+  <title>Sign-in callback</title>
 </head>
 <body>
-  <h1>Shopify sign-in</h1>
-  <p id="status" role="status">Completing sign-in...</p>
-  <a href="/index.html">Return to the sign-in page</a>
+  <a href="/index.html">Return to sign in</a>
 
   <script type="module">
     import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
 
     const pb = new PocketBase(location.origin);
     const redirectURL = new URL('/redirect.html', location.origin).href;
-    const status = document.getElementById('status');
+    const params = new URLSearchParams(location.search);
+    history.replaceState(null, '', location.pathname);
 
-    async function completeShopifyLogin() {
-      const params = new URLSearchParams(location.search);
-      history.replaceState(null, '', location.pathname);
+    // Do not repeat silent authorization when returning to the login page.
+    sessionStorage.setItem('shopify.skipSilent', '1');
+    const saved = sessionStorage.getItem('shopify.oauth');
+    sessionStorage.removeItem('shopify.oauth');
+    const provider = JSON.parse(saved || 'null');
+    if (!provider || !Number.isFinite(provider.expires) ||
+        provider.expires <= Date.now() || provider.state !== params.get('state')) {
+      throw new Error('Invalid or expired Shopify callback.');
+    }
 
-      const saved = sessionStorage.getItem('shopify.oauth');
-      sessionStorage.removeItem('shopify.oauth');
-      const flow = JSON.parse(saved || 'null');
-
-      if (!flow || !Number.isFinite(flow.expires) ||
-          flow.expires <= Date.now() || flow.state !== params.get('state')) {
-        throw new Error('Invalid or expired Shopify callback.');
-      }
-
-      if (params.has('error')) return { error: params.get('error') };
+    const error = params.get('error');
+    if (error === 'login_required') {
+      location.replace('/index.html');
+    } else if (error) {
+      throw new Error('Shopify did not authorize sign-in.');
+    } else {
       const code = params.get('code');
       if (!code) throw new Error('Missing Shopify code.');
 
-      // Prevent linking to another account that is already signed in.
+      // Prevent linking Shopify to an account already signed in here.
       pb.authStore.clear();
-      return pb.collection('users').authWithOAuth2Code(
-        'shopify', code, flow.verifier, redirectURL,
+      await pb.collection('users').authWithOAuth2Code(
+        provider.name, code, provider.codeVerifier, redirectURL,
       );
-    }
-
-    try {
-      const result = await completeShopifyLogin();
-      if (result.error === 'login_required') {
-        status.textContent = 'No active Shopify session. Return to the sign-in page and choose "Sign in with Shopify".';
-      } else if (result.error) {
-        status.textContent = 'Shopify did not authorize sign-in. Return to the sign-in page to try again.';
-      } else {
-        status.textContent = 'You are signed in. You can return to the application.';
-      }
-    } catch (error) {
-      status.textContent = error.response?.mfaId
-        ? 'A second authentication factor is required. This minimal example does not implement that step.'
-        : 'Sign-in failed or the callback expired. Return to the sign-in page to try again.';
+      location.replace('/index.html');
     }
   </script>
 </body>
 </html>
 ```
 
-Configure your server or reverse proxy to send `Cache-Control: no-store` and `Referrer-Policy: no-referrer` for the callback page. Protect the pages from script injection and do not log codes or tokens. If the API is on another origin, configure CORS; the backend expects the request's `Origin` to match the callback origin.
+The SDK stores the PocketBase session in `pb.authStore`. Add your application's error handling and, if enabled, the [MFA second-factor step](https://pocketbase.io/docs/authentication/#multi-factor-authentication). These examples leave errors to the browser rather than implementing an error UI.
 
-The SDK persists the PocketBase session in `pb.authStore`. Signing out clears that application session and leaves the Shopify session active. If MFA is enabled, extend the callback page with a second-factor form using PocketBase's [MFA flow](https://pocketbase.io/docs/authentication/#multi-factor-authentication).
+Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Protect the pages from script injection and do not log codes or tokens. If the frontend and API use different origins, inject their URLs through your frontend configuration and enable CORS. The backend expects the request's `Origin` to match the callback origin; browser JavaScript cannot read Go environment variables directly.
 
 ## Tests
 
