@@ -12,7 +12,19 @@ The examples use the `users` auth collection. If yours has a different name, upd
 
 ### 1. Install the SSO library
 
-Run these commands from your existing PocketBase application directory.
+Like PocketBase itself, this library is a regular Go module. Add its import to your application using the integration example in step 5:
+
+```go
+import shopifysso "github.com/wonder-partners/shopify-pocketbase-sso"
+```
+
+After adding the integration code, run this command from the directory containing your application's `go.mod`:
+
+```sh
+go mod tidy
+```
+
+Go resolves the imports, downloads missing dependencies from their remote repositories, and updates `go.mod` and `go.sum` automatically. You do not need to edit these files manually. If your Go module is in a subdirectory, run the command there or use `go -C apps/api mod tidy`, replacing `apps/api` with your module directory.
 
 For a private repository, configure Git with read access to the repository and mark the module as private before downloading it:
 
@@ -22,15 +34,17 @@ go env -w GOPRIVATE=github.com/wonder-partners/shopify-pocketbase-sso
 
 If `GOPRIVATE` already contains other entries, append this module path to the existing comma-separated list. Configure access on each machine that builds the application, including CI.
 
+To select a specific version or commit instead of letting `go mod tidy` resolve the missing dependency, use:
+
 ```sh
 go get github.com/wonder-partners/shopify-pocketbase-sso@<version-or-commit>
 ```
 
-To use a local checkout, add a `replace` in the host project:
+For local library development, you can optionally use a local checkout by adding a `replace` in the host project. This is unnecessary when using the remote repository:
 
 ```sh
 go mod edit -replace=github.com/wonder-partners/shopify-pocketbase-sso=/path/to/shopify-pocketbase-sso
-go get github.com/wonder-partners/shopify-pocketbase-sso
+go mod tidy
 ```
 
 ### 2. Prepare the frontend and HTTPS URLs
