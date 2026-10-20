@@ -1,6 +1,6 @@
 # Shopify app setup
 
-Follow this guide after [preparing your PocketBase application and frontend](../README.md#integration). Have the frontend's HTTPS URL and its callback URL ready, using a deployment or a public HTTPS tunnel. You can run PocketBase and serve the frontend before you have Shopify credentials.
+Follow this guide when [integrating SSO into your existing PocketBase application](../README.md#integration). Have the frontend's HTTPS URL and its callback URL ready, using a deployment or a public HTTPS tunnel.
 
 1. In the store's Shopify admin, open **Settings > Customer accounts** and make sure the store uses customer accounts with email-code sign-in. Note the store origin, such as `https://my-store.myshopify.com`, for `ShopURL`. [Customer accounts](https://help.shopify.com/en/manual/customers/customer-accounts/manage).
 2. In the [Dev Dashboard](https://dev.shopify.com/dashboard), select **Apps > Create app > Start from Dev Dashboard** and fill in the creation form:
@@ -35,7 +35,7 @@ Follow this guide after [preparing your PocketBase application and frontend](../
    redirect_uris = ["https://my-frontend.example/redirect.html"]
    ```
 
-   Replace the example URLs with the frontend and callback URLs you prepared earlier. The callback must match `RedirectURL` exactly, including the value you will supply through `SHOPIFY_REDIRECT_URL` in the [PocketBase environment configuration](../README.md#5-configure-the-environment). Adding it to the dashboard's **Allowed redirection URL(s)** field does not register it for customer sign-in; it must be listed under `customer_authentication.redirect_uris`. Keep `embedded = false` when updating the URLs. [Shopify configuration](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication).
+   Replace the example URLs with the frontend and callback URLs you prepared earlier. The callback must match `RedirectURL` exactly, including the value you will supply through `SHOPIFY_REDIRECT_URL` in the [PocketBase environment configuration](../README.md#4-configure-the-environment). Adding it to the dashboard's **Allowed redirection URL(s)** field does not register it for customer sign-in; it must be listed under `customer_authentication.redirect_uris`. Keep `embedded = false` when updating the URLs. [Shopify configuration](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication).
 5. Ensure the app can access [protected customer data](https://shopify.dev/docs/apps/launch/protected-customer-data), including **Email**. For public apps, open your app in the Partner Dashboard under **Apps > your app > API access requests**. Under **Protected customer data access**, select **Request access** and declare the fields you need.
 6. Publish the configuration with `shopify app deploy`, then install the app:
 
@@ -44,4 +44,4 @@ Follow this guide after [preparing your PocketBase application and frontend](../
 
 This flow uses the app's Client ID with PKCE. No client secret or Admin API token is needed. [Customer Account API authentication](https://shopify.dev/docs/api/customer/2026-10#authentication).
 
-Return to the [README environment configuration](../README.md#5-configure-the-environment) to set the store origin, callback URL and Client ID, then register the SSO service and test sign-in.
+Return to the [README environment configuration](../README.md#4-configure-the-environment) to set the store origin, callback URL and Client ID, then register the SSO service and test sign-in.
