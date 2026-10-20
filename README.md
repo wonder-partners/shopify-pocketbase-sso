@@ -40,7 +40,7 @@ Choose the sign-in page and callback route in your existing frontend. You can us
 Use your existing HTTPS deployment or a public HTTPS tunnel to your local application. Have these addresses ready before configuring Shopify:
 
 - Frontend URL, for example `https://my-frontend.example`, for Shopify's **App URL**.
-- Callback URL, for example `https://my-frontend.example/redirect.html`, for Shopify customer authentication and `SHOPIFY_REDIRECT_URL`.
+- Callback URL, for example `https://my-frontend.example/redirect.html`, for Shopify customer authentication and `SHOPIFY_CUSTOMER_CALLBACK_URL`.
 
 Replace the example domain with your deployment or tunnel domain. Use the same origin for the frontend and PocketBase API when following these examples. Make sure your frontend serves the sign-in page and callback at the chosen addresses. Shopify sign-in will work only after the remaining steps are complete.
 
@@ -55,12 +55,16 @@ When you finish that guide, you will have the store origin, the registered custo
 Set these environment variables in the shell or deployment platform that starts your PocketBase application. Replace the example values with your store, registered callback URL and app Client ID:
 
 ```dotenv
-SHOPIFY_SHOP_URL=https://my-store.myshopify.com
-SHOPIFY_REDIRECT_URL=https://my-frontend.example/redirect.html
-SHOPIFY_CLIENT_ID=my-public-client
+SHOPIFY_STORE_URL=https://my-store.myshopify.com
+SHOPIFY_CUSTOMER_CALLBACK_URL=https://my-frontend.example/redirect.html
+SHOPIFY_APP_CLIENT_ID=my-public-client
 ```
 
-`os.Getenv` reads the process environment. If you use a `.env` file, configure your application runner to load it; Go does not load it automatically. No Shopify client secret is needed.
+- `SHOPIFY_STORE_URL`: find your store's `*.myshopify.com` domain in Shopify admin under [**Settings > Domains**](https://help.shopify.com/en/manual/domains/domain-type/change-primary-domain). Add `https://`, with no path or trailing slash.
+- `SHOPIFY_CUSTOMER_CALLBACK_URL`: use the frontend callback URL chosen in step 2 and registered in your Shopify app's `shopify.app.toml` under `customer_authentication.redirect_uris`. For the frontend example below, this is your frontend's HTTPS origin followed by `/redirect.html`. Copy the registered URL exactly.
+- `SHOPIFY_APP_CLIENT_ID`: in the [Dev Dashboard](https://dev.shopify.com/dashboard), open your app, then **App settings > Credentials**, and copy **Client ID**. See [Shopify app credentials](https://shopify.dev/docs/apps/build/authentication-authorization/manage-credentials).
+
+These variable names are conventions for your host application. The example reads them with `os.Getenv` and passes their values to `shopifysso.Config`; the library does not read environment variables itself. If you use a `.env` file, configure your application runner to load it; Go does not load it automatically. No Shopify client secret is needed.
 
 ### 5. Register the service
 
@@ -84,9 +88,9 @@ func main() {
     app := pocketbase.New()
     app.OnServe().BindFunc(func(e *core.ServeEvent) error {
         sso, err := shopifysso.New(context.Background(), app, shopifysso.Config{
-            ShopURL:        os.Getenv("SHOPIFY_SHOP_URL"),
-            RedirectURL:    os.Getenv("SHOPIFY_REDIRECT_URL"),
-            ClientID:       os.Getenv("SHOPIFY_CLIENT_ID"),
+            ShopURL:        os.Getenv("SHOPIFY_STORE_URL"),
+            RedirectURL:    os.Getenv("SHOPIFY_CUSTOMER_CALLBACK_URL"),
+            ClientID:       os.Getenv("SHOPIFY_APP_CLIENT_ID"),
             AuthCollection: "users",
         })
         if err != nil {
@@ -123,7 +127,7 @@ go run . serve
 
 Keep the HTTPS deployment or tunnel pointing to this server. Open your frontend's sign-in page, such as `https://my-frontend.example/index.html` for the example below, then sign in with a customer account from the configured Shopify store.
 
-If you change your frontend or tunnel domain later, update Shopify's **App URL**, `customer_authentication.redirect_uris`, `SHOPIFY_REDIRECT_URL` and any frontend configuration together, then deploy the Shopify configuration and restart PocketBase.
+If you change your frontend or tunnel domain later, update Shopify's **App URL**, `customer_authentication.redirect_uris`, `SHOPIFY_CUSTOMER_CALLBACK_URL` and any frontend configuration together, then deploy the Shopify configuration and restart PocketBase.
 
 ## Minimal frontend example
 
