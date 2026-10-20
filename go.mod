@@ -1,4 +1,4 @@
-module github.com/Sov3rain/shopify-pocketbase-sso
+module github.com/wonder-partners/shopify-pocketbase-sso
 
 go 1.27.2
 

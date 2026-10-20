@@ -10,15 +10,23 @@ Follow the [Shopify app setup guide](docs/shopify-setup.md) to create, configure
 
 ## Installation
 
+For a private repository, configure Git with read access to the repository and mark the module as private before downloading it:
+
 ```sh
-go get github.com/Sov3rain/shopify-pocketbase-sso@<version-or-commit>
+go env -w GOPRIVATE=github.com/wonder-partners/shopify-pocketbase-sso
+```
+
+If `GOPRIVATE` already contains other entries, append this module path to the existing comma-separated list. Configure access on each machine that builds the application, including CI.
+
+```sh
+go get github.com/wonder-partners/shopify-pocketbase-sso@<version-or-commit>
 ```
 
 To use a local checkout, add a `replace` in the host project:
 
 ```sh
-go mod edit -replace=github.com/Sov3rain/shopify-pocketbase-sso=/path/to/shopify-pocketbase-sso
-go get github.com/Sov3rain/shopify-pocketbase-sso
+go mod edit -replace=github.com/wonder-partners/shopify-pocketbase-sso=/path/to/shopify-pocketbase-sso
+go get github.com/wonder-partners/shopify-pocketbase-sso
 ```
 
 ## Integration
@@ -47,7 +55,7 @@ import (
     "log"
     "os"
 
-    shopifysso "github.com/Sov3rain/shopify-pocketbase-sso"
+    shopifysso "github.com/wonder-partners/shopify-pocketbase-sso"
     "github.com/pocketbase/pocketbase"
     "github.com/pocketbase/pocketbase/core"
 )

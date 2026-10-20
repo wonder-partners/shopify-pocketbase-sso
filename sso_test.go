@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Sov3rain/shopify-pocketbase-sso/internal/mockshop"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/auth"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/wonder-partners/shopify-pocketbase-sso/internal/mockshop"
 	"golang.org/x/oauth2"
 )
 
