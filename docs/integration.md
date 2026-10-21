@@ -1,6 +1,6 @@
 # Integration reference
 
-Details for applications that customize PocketBase hooks, middleware or account management. For setup and examples, see the [README](../README.md#integration).
+Optional details for applications that customize PocketBase hooks, middleware or account management. The complete setup guide is in the [README](../README.md).
 
 ## Installation options
 

@@ -1,55 +1,123 @@
 # Shopify SSO for PocketBase
 
-Let customers sign in to PocketBase with their Shopify account. The Go package `shopifysso` uses PocketBase's OAuth2 flow and keeps your access rules, hooks and MFA.
+Let customers sign in to your PocketBase application with their Shopify account. PocketBase keeps its access rules, hooks and MFA. One store and one auth collection are supported per application.
 
-Tested with PocketBase `0.40.5` and Go `1.27.2`. Supports one Shopify store and one auth collection per application. No Shopify client secret is needed.
+## Before you start
 
-## Integration
+You need:
 
-You need an existing PocketBase Go application and an auth collection. The examples use `users`. If yours has another name, change it in the Go and frontend examples. Its create rule must allow account creation for new customers to sign up.
+- An existing PocketBase Go application with an auth collection. This guide uses `users`.
+- Access to your Shopify store's admin and the [Dev Dashboard](https://dev.shopify.com/dashboard) to create and install an app.
+- [Shopify CLI](https://shopify.dev/docs/apps/build/cli-for-apps) installed.
+- A public HTTPS address for your PocketBase application, through your hosting or a local tunnel.
 
-### 1. Install the SSO library
+The steps below add two sign-in pages to your PocketBase server. Everything runs on the same HTTPS address. Replace the example domains with yours throughout the guide.
 
-Run this from your application's folder containing `go.mod`:
+Tested with PocketBase `0.40.5` and Go `1.27.2`.
+
+## 1. Prepare your store and URLs
+
+In Shopify admin, open **Settings > Customer accounts** and enable customer accounts with email-code sign-in.
+
+Keep these values ready:
+
+- Store URL: `https://my-store.myshopify.com`. Find the `*.myshopify.com` domain in **Settings > Domains**. Use no path or trailing slash.
+- Application URL: `https://my-frontend.example`. Your HTTPS hosting or tunnel must forward to PocketBase.
+- Callback URL: `https://my-frontend.example/redirect.html`. Shopify will return customers to this page after sign-in.
+
+You will create the callback page in step 6.
+
+## 2. Create the Shopify app
+
+In the [Dev Dashboard](https://dev.shopify.com/dashboard), open **Apps > Create app > Start from Dev Dashboard**, name the app and create it.
+
+In its version settings, use:
+
+- **App URL**: your application URL from step 1.
+- **Embed app in Shopify admin**: unchecked.
+- **Scopes**: `customer_read_customers`.
+- **Allowed redirection URL(s)**: leave empty. The customer callback is configured in the next step.
+- **Use legacy install flow**: unchecked.
+
+Leave the other settings at their defaults and release this initial version.
+
+Open **App settings > Credentials** and save the **Client ID**. No client secret or Admin API token is needed.
+
+## 3. Configure and install the Shopify app
+
+Keep the Shopify app configuration in the same repository as the PocketBase application that uses this library, ideally in a dedicated subfolder. Commit the generated `shopify.app.toml` so that Shopify URLs and permissions are versioned alongside the application code. Its `client_id` is public and can be committed.
+
+From the root of your PocketBase application repository, create that subfolder and link it to the Shopify app you just created:
+
+```sh
+mkdir shopify
+cd shopify
+shopify app config link
+```
+
+In the generated `shopify.app.toml`, update these values with your URLs. Keep the other generated settings, including `client_id`:
+
+```toml
+application_url = "https://my-frontend.example"
+embedded = false
+
+[access_scopes]
+scopes = "customer_read_customers"
+
+[customer_authentication]
+redirect_uris = ["https://my-frontend.example/redirect.html"]
+```
+
+Edit existing entries rather than adding duplicate sections. The callback belongs in [`customer_authentication.redirect_uris`](https://shopify.dev/docs/apps/build/cli-for-apps/app-configuration#customer_authentication), not in the dashboard's installation redirect field.
+
+Publish the configuration from this folder:
+
+```sh
+shopify app deploy
+```
+
+Return to the app's **Home** page in the Dev Dashboard and install it on your store:
+
+- If there is a **Distribution** card, select **Select distribution method > Custom distribution** and confirm. Then open **Manage custom install link**, enter the store domain, generate the link and have the store owner use it to install the app. The distribution choice is permanent.
+- Otherwise, on the **Installs** card, select **Install app**, choose the store and approve installation.
+
+This integration needs access to customer email addresses. [Shopify grants this access to custom apps](https://shopify.dev/docs/apps/launch/protected-customer-data).
+
+## 4. Set the PocketBase environment variables
+
+Return to your PocketBase application's folder, the one containing `go.mod`.
+
+Set the following variables in the terminal you will use to start PocketBase. Replace the store URL, callback URL and Client ID with the values from steps 1 to 3.
+
+With Bash:
+
+```sh
+export SHOPIFY_STORE_URL="https://my-store.myshopify.com"
+export SHOPIFY_CUSTOMER_CALLBACK_URL="https://my-frontend.example/redirect.html"
+export SHOPIFY_APP_CLIENT_ID="your-client-id"
+```
+
+With PowerShell:
+
+```powershell
+$env:SHOPIFY_STORE_URL = "https://my-store.myshopify.com"
+$env:SHOPIFY_CUSTOMER_CALLBACK_URL = "https://my-frontend.example/redirect.html"
+$env:SHOPIFY_APP_CLIENT_ID = "your-client-id"
+```
+
+The callback must match the URL deployed in step 3 exactly. For a hosted deployment, set these same variables in your hosting platform. A `.env` file alone is not enough; Go does not load it automatically.
+
+## 5. Add the service to PocketBase
+
+From the folder containing `go.mod`, install the library.
+
+If the repository is private, first configure Git with read access and run `go env -w GOPRIVATE=github.com/wonder-partners/shopify-pocketbase-sso`. If `GOPRIVATE` already contains entries, append this path to its comma-separated list instead.
 
 ```sh
 go get github.com/wonder-partners/shopify-pocketbase-sso
 ```
 
-For private repository access, a specific version or a local checkout, see [installation options](docs/integration.md#installation-options).
-
-### 2. Prepare the frontend and HTTPS URLs
-
-Serve your frontend and PocketBase API on the same HTTPS origin, using your deployment or a public HTTPS tunnel for local development. For example:
-
-- Frontend: `https://my-frontend.example`
-- Sign-in callback: `https://my-frontend.example/redirect.html`
-
-The callback is the page Shopify sends customers back to after sign-in. You can use the [two-page frontend example](docs/frontend.md), served from `pb_public` by the Go code below.
-
-### 3. Create and install the Shopify app
-
-Follow the [Shopify setup guide](docs/shopify-setup.md) with the URLs from step 2. It covers app creation, permissions, callback registration and installation on your store. Keep **Embed app in Shopify admin** unchecked and save the app's **Client ID**.
-
-### 4. Configure the environment
-
-Set these variables in the shell or deployment platform that starts PocketBase. Replace the example values:
-
-```dotenv
-SHOPIFY_STORE_URL=https://my-store.myshopify.com
-SHOPIFY_CUSTOMER_CALLBACK_URL=https://my-frontend.example/redirect.html
-SHOPIFY_APP_CLIENT_ID=my-public-client
-```
-
-- Store URL: your `*.myshopify.com` domain with `https://`, without a path or trailing slash.
-- Callback URL: copy the URL registered in `shopify.app.toml` under `customer_authentication.redirect_uris` exactly.
-- Client ID: copy it from your app's **App settings > Credentials** in the [Dev Dashboard](https://dev.shopify.com/dashboard).
-
-The Go example reads these variables with `os.Getenv`. If you use a `.env` file, configure your runner to load it; Go does not load it automatically.
-
-### 5. Register the service
-
-Add the service to your application's `OnServe` hook, after migrations have created the auth collection. This `main.go` also serves the frontend from `pb_public`. If you already serve your frontend, keep your existing routes.
+Add the service to your application's `OnServe` hook. This complete `main.go` also serves the pages you will create next:
 
 ```go
 package main
@@ -87,36 +155,149 @@ func main() {
 }
 ```
 
-Keep `context.Background()` or use a context that lasts for the service's lifetime. A short startup timeout would stop Shopify connection retries.
+The `users` auth collection must exist before this hook runs. If yours has another name, change `AuthCollection` above and `users` in both HTML files below. To allow new customers to sign up, its create rule must allow account creation.
 
-### 6. Restart PocketBase and test sign-in
+If you already have an `OnServe` hook or frontend routes, merge these additions into your existing setup. Keep a context that lasts for the service's lifetime, as `context.Background()` does here.
 
-With the environment variables loaded, run:
+## 6. Add the sign-in pages
+
+Create a `pb_public` folder beside `go.mod`, then save the following two files inside it.
+
+The first page tries to sign in with an existing Shopify session. If the customer needs to sign in, it shows a link. The callback page checks Shopify's response and exchanges the code for a PocketBase session.
+
+### `pb_public/index.html`
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in</title>
+</head>
+<body>
+  <a id="login" hidden>Sign in with Shopify</a>
+
+  <script type="module">
+    import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
+
+    const pb = new PocketBase(location.origin);
+    const redirectURL = new URL('/redirect.html', location.origin).href;
+    const login = document.getElementById('login');
+    const skipSilent = sessionStorage.getItem('shopify.skipSilent') === '1';
+    sessionStorage.removeItem('shopify.skipSilent');
+
+    if (!pb.authStore.isValid) {
+      const methods = await pb.collection('users').listAuthMethods();
+      const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+      if (!provider) throw new Error('Shopify is not available.');
+
+      login.href = provider.authURL + encodeURIComponent(redirectURL);
+      function saveProvider() {
+        sessionStorage.setItem('shopify.oauth', JSON.stringify({
+          ...provider,
+          expires: Date.now() + 5 * 60 * 1000,
+        }));
+      }
+      login.addEventListener('click', saveProvider);
+
+      if (skipSilent) {
+        login.hidden = false;
+      } else {
+        saveProvider();
+        const url = new URL(login.href);
+        url.searchParams.set('prompt', 'none');
+        location.assign(url.href);
+      }
+    }
+  </script>
+</body>
+</html>
+```
+
+### `pb_public/redirect.html`
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Sign-in callback</title>
+</head>
+<body>
+  <a href="/index.html">Return to sign in</a>
+
+  <script type="module">
+    import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
+
+    const pb = new PocketBase(location.origin);
+    const redirectURL = new URL('/redirect.html', location.origin).href;
+    const params = new URLSearchParams(location.search);
+    history.replaceState(null, '', location.pathname);
+
+    // Do not repeat silent authorization when returning to the login page.
+    sessionStorage.setItem('shopify.skipSilent', '1');
+    const saved = sessionStorage.getItem('shopify.oauth');
+    sessionStorage.removeItem('shopify.oauth');
+    const provider = JSON.parse(saved || 'null');
+    if (!provider || !Number.isFinite(provider.expires) ||
+        provider.expires <= Date.now() || provider.state !== params.get('state')) {
+      throw new Error('Invalid or expired Shopify callback.');
+    }
+
+    const error = params.get('error');
+    if (error === 'login_required') {
+      location.replace('/index.html');
+    } else if (error) {
+      throw new Error('Shopify did not authorize sign-in.');
+    } else {
+      const code = params.get('code');
+      if (!code) throw new Error('Missing Shopify code.');
+
+      // Prevent linking Shopify to an account already signed in here.
+      pb.authStore.clear();
+      await pb.collection('users').authWithOAuth2Code(
+        provider.name, code, provider.codeVerifier, redirectURL,
+      );
+      location.replace('/index.html');
+    }
+  </script>
+</body>
+</html>
+```
+
+This flow uses `authWithOAuth2Code`. The `authWithOAuth2` popup flow is not supported. For an application with MFA enabled, also handle PocketBase's second-factor challenge.
+
+## 7. Start and test
+
+In your PocketBase application's folder, using the same terminal as step 4, run:
 
 ```sh
 go mod tidy
 go run . serve
 ```
 
-Open your frontend over HTTPS and sign in with a customer account from your Shopify store. For the frontend example, open `https://my-frontend.example/index.html`. Keep your deployment or tunnel pointing to the PocketBase server.
+Keep your hosting or HTTPS tunnel pointing to this server. Open `https://my-frontend.example/index.html` and sign in with a customer account from your Shopify store.
 
-If your domain changes, update Shopify's **App URL**, `customer_authentication.redirect_uris`, `SHOPIFY_CUSTOMER_CALLBACK_URL` and any frontend configuration. Deploy the Shopify configuration and restart PocketBase.
+After sign-in, the browser returns to `index.html` and the PocketBase SDK stores the session in `pb.authStore`. You can check it in the browser's local storage under `pocketbase_auth`.
 
-## Frontend
+If sign-in fails:
 
-Use the [frontend example](docs/frontend.md) for the sign-in page, callback and deployment precautions. It uses `authWithOAuth2Code`; the `authWithOAuth2` popup flow is not supported. Add error handling and the second-factor step if you enable MFA.
+- Shopify is unavailable: check the PocketBase logs. The server retries connecting automatically; Shopify stays hidden from `listAuthMethods()` until ready, and direct login requests return HTTP 503.
+- HTTP 409: a PocketBase account already uses that email. Accounts are linked by Shopify identity and are not merged by email.
+- Invalid callback: check that the Shopify callback, `SHOPIFY_CUSTOMER_CALLBACK_URL` and the page's HTTPS URL match exactly.
 
-## Account and startup behavior
+Before using these pages in production, add visible error handling. Serve the callback with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, protect the pages from script injection and do not log codes or tokens. Shopify tokens are neither stored nor sent to the frontend.
 
-The library enables the `shopify` provider and creates a private `_shopifyIdentities` collection. It links accounts by Shopify identity. An existing account with the same email is not merged; login returns HTTP 409. Shopify tokens are neither stored nor sent to the frontend.
+If the HTTPS domain changes, update `application_url` and `customer_authentication.redirect_uris` in `shopify.app.toml`, run `shopify app deploy`, update `SHOPIFY_CUSTOMER_CALLBACK_URL` and restart PocketBase.
 
-PocketBase starts even if Shopify is unavailable and retries the connection automatically. Until it succeeds, Shopify is absent from `listAuthMethods()` and direct Shopify login requests return HTTP 503 with `Retry-After`.
+## Reference and development
 
-See the [integration reference](docs/integration.md) for custom hooks, middleware, MFA and account management.
+The setup above is complete. The [integration reference](docs/integration.md) covers optional configuration, custom hooks, middleware and account management.
 
-## Tests
-
-Run `mise run check` for Go tests, the SDK OAuth test, static analysis and compilation. Mise and Node are only needed for development. See the [testing guide](tests/README.md).
+To work on this library, run `mise run check`. See the [testing guide](tests/README.md).
 
 ## License
 
