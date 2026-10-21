@@ -2,6 +2,41 @@
 
 Details for applications that customize PocketBase hooks, middleware or account management. For setup and examples, see the [README](../README.md#integration).
 
+## Installation options
+
+Run Go commands from the folder containing your application's `go.mod`. Go downloads dependencies and updates `go.mod` and `go.sum` for you.
+
+For a private repository, give Git read access and mark the module as private before installing:
+
+```sh
+go env -w GOPRIVATE=github.com/wonder-partners/shopify-pocketbase-sso
+```
+
+If `GOPRIVATE` already has entries, append this path to its comma-separated list. Configure access on every build machine, including CI.
+
+To install a specific version or commit, replace `<version-or-commit>`:
+
+```sh
+go get github.com/wonder-partners/shopify-pocketbase-sso@<version-or-commit>
+```
+
+To develop the library from a local checkout, replace the path below:
+
+```sh
+go mod edit -replace=github.com/wonder-partners/shopify-pocketbase-sso=/path/to/shopify-pocketbase-sso
+go mod tidy
+```
+
+## Configuration
+
+Pass configuration to `shopifysso.New` through `shopifysso.Config`. The library does not read environment variables itself.
+
+- `ShopURL`: store HTTPS origin, without a path or trailing slash.
+- `RedirectURL`: frontend callback URL registered with Shopify.
+- `ClientID`: public Customer Account API client ID. Authentication uses PKCE and needs no client secret.
+- `AuthCollection`: existing auth collection name or ID. Defaults to `users`.
+- `AllowLoopbackHTTP`: allows loopback HTTP for tests. Disabled by default.
+
 ## Collections and account identity
 
 The host project owns its fields and rules. The library enables the `shopify` provider and creates the private `_shopifyIdentities` collection. Provider configuration reads and updates the auth collection in one transaction to preserve concurrent host changes. The auth collection's create rule determines whether a first login can create an account.
