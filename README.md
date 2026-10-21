@@ -76,10 +76,31 @@ Publish the configuration from this folder:
 shopify app deploy
 ```
 
-Return to the app's **Home** page in the Dev Dashboard and install it on your store:
+### Install the app on your store
 
-- If there is a **Distribution** card, select **Select distribution method > Custom distribution** and confirm. Then open **Manage custom install link**, enter the store domain, generate the link and have the store owner use it to install the app. The distribution choice is permanent.
-- Otherwise, on the **Installs** card, select **Install app**, choose the store and approve installation.
+`shopify app deploy` publishes the configuration. You still need to install the app on your store.
+
+Open the [Dev Dashboard](https://dev.shopify.com/dashboard), then **Apps > your app > Home**.
+
+If the app belongs to your store's organization, use the **Installs** card:
+
+1. Click **Install app** at the top of the card.
+2. In the new tab, select the target store.
+3. Review the requested permissions and click **Install** to approve them.
+
+If the app belongs to a Partner organization, use the **Distribution** card to install it on the intended merchant's store:
+
+1. Click **Select distribution method**.
+2. Select **Custom distribution** and confirm. This choice is permanent.
+3. Open **Manage custom install link**.
+4. In **Store domain**, enter `my-store.myshopify.com` without `https://`. Use the same store as `SHOPIFY_STORE_URL`; find its Shopify domain in the store admin under **Settings > Domains**. You can also enter `admin.shopify.com/store/my-store`.
+5. For a single-store installation, uncheck **Allow multi-store install for one Plus organization**.
+6. Click **Generate link**, then copy the installation link.
+7. Open the link with the store owner's account, or send it to the owner, then approve the permissions with **Install**.
+
+The **Distribution** card only appears for Partner-owned apps. See Shopify's [distribution and custom installation guide](https://shopify.dev/docs/apps/launch/distribution/select-distribution-method).
+
+After approval, check that the app appears in the store's installed apps.
 
 This integration needs access to customer email addresses. [Shopify grants this access to custom apps](https://shopify.dev/docs/apps/launch/protected-customer-data).
 
