@@ -199,6 +199,7 @@ The first page shows the signed-in customer's email when a PocketBase session ex
 <body>
   <p id="status" role="status">Checking sign-in...</p>
   <a id="login" hidden>Sign in with Shopify</a>
+  <button id="logout" type="button" hidden>Sign out</button>
 
   <script type="module">
     import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
@@ -207,11 +208,18 @@ The first page shows the signed-in customer's email when a PocketBase session ex
     const redirectURL = new URL('/redirect.html', location.origin).href;
     const status = document.getElementById('status');
     const login = document.getElementById('login');
+    const logout = document.getElementById('logout');
     const skipSilent = sessionStorage.getItem('shopify.skipSilent') === '1';
     sessionStorage.removeItem('shopify.skipSilent');
 
     if (pb.authStore.isValid) {
       status.textContent = `Connected as ${pb.authStore.record.email}`;
+      logout.hidden = false;
+      logout.addEventListener('click', () => {
+        pb.authStore.clear();
+        sessionStorage.setItem('shopify.skipSilent', '1');
+        location.replace('/index.html');
+      });
     } else {
       const methods = await pb.collection('users').listAuthMethods();
       const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
@@ -308,6 +316,8 @@ go run . serve
 Keep your hosting or HTTPS tunnel pointing to this server. Open `https://my-frontend.example/index.html` and sign in with a customer account from your Shopify store.
 
 After sign-in, the browser returns to `index.html`, which displays `Connected as` followed by the customer's email. The PocketBase SDK stores the session in `pb.authStore`; the example reads the email from `pb.authStore.record.email` and uses `textContent` to display it safely.
+
+The **Sign out** button clears the local PocketBase session and returns to the sign-in link without trying silent sign-in again. It leaves the Shopify session active.
 
 If sign-in fails:
 
