@@ -184,7 +184,7 @@ If you already have an `OnServe` hook or frontend routes, merge these additions 
 
 Create a `pb_public` folder beside `go.mod`, then save the following two files inside it.
 
-The first page shows the signed-in customer's email when a PocketBase session exists. Otherwise, it tries to sign in with an existing Shopify session. If the customer needs to sign in, it shows a link. The callback page checks Shopify's response and exchanges the code for a PocketBase session.
+The first page checks for an existing Shopify session on load and when the customer returns to the tab, even if a PocketBase session already exists. If the customer needs to sign in, it shows a link. Otherwise, it shows their email after the callback page checks Shopify's response and exchanges the code for a PocketBase session.
 
 ### `pb_public/index.html`
 
@@ -199,7 +199,6 @@ The first page shows the signed-in customer's email when a PocketBase session ex
 <body>
   <p id="status" role="status">Checking sign-in...</p>
   <a id="login" hidden>Sign in with Shopify</a>
-  <button id="logout" type="button" hidden>Sign out</button>
 
   <script type="module">
     import PocketBase from 'https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.es.mjs';
@@ -208,41 +207,52 @@ The first page shows the signed-in customer's email when a PocketBase session ex
     const redirectURL = new URL('/redirect.html', location.origin).href;
     const status = document.getElementById('status');
     const login = document.getElementById('login');
-    const logout = document.getElementById('logout');
     const skipSilent = sessionStorage.getItem('shopify.skipSilent') === '1';
     sessionStorage.removeItem('shopify.skipSilent');
+    let redirecting = false;
 
-    if (pb.authStore.isValid) {
+    const methods = await pb.collection('users').listAuthMethods();
+    const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
+    if (!provider) throw new Error('Shopify is not available.');
+
+    login.href = provider.authURL + encodeURIComponent(redirectURL);
+    function saveProvider() {
+      sessionStorage.setItem('shopify.oauth', JSON.stringify({
+        ...provider,
+        expires: Date.now() + 5 * 60 * 1000,
+      }));
+    }
+    login.addEventListener('click', saveProvider);
+
+    function checkShopifySession() {
+      if (redirecting) return;
+      redirecting = true;
+      status.textContent = 'Checking sign-in...';
+      login.hidden = true;
+      saveProvider();
+      const url = new URL(login.href);
+      url.searchParams.set('prompt', 'none');
+      location.replace(url.href);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkShopifySession();
+    });
+    window.addEventListener('blur', () => {
+      window.addEventListener('focus', checkShopifySession, {once: true});
+    });
+    window.addEventListener('pageshow', event => {
+      if (event.persisted) location.reload();
+    });
+
+    // Display the callback result once before checking Shopify again.
+    if (!skipSilent) {
+      checkShopifySession();
+    } else if (pb.authStore.isValid) {
       status.textContent = `Connected as ${pb.authStore.record.email}`;
-      logout.hidden = false;
-      logout.addEventListener('click', () => {
-        pb.authStore.clear();
-        sessionStorage.setItem('shopify.skipSilent', '1');
-        location.replace('/index.html');
-      });
     } else {
-      const methods = await pb.collection('users').listAuthMethods();
-      const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
-      if (!provider) throw new Error('Shopify is not available.');
-
-      login.href = provider.authURL + encodeURIComponent(redirectURL);
-      function saveProvider() {
-        sessionStorage.setItem('shopify.oauth', JSON.stringify({
-          ...provider,
-          expires: Date.now() + 5 * 60 * 1000,
-        }));
-      }
-      login.addEventListener('click', saveProvider);
-
-      if (skipSilent) {
-        status.textContent = 'Not signed in.';
-        login.hidden = false;
-      } else {
-        saveProvider();
-        const url = new URL(login.href);
-        url.searchParams.set('prompt', 'none');
-        location.assign(url.href);
-      }
+      status.textContent = 'Not signed in.';
+      login.hidden = false;
     }
   </script>
 </body>
@@ -271,8 +281,6 @@ The first page shows the signed-in customer's email when a PocketBase session ex
     const params = new URLSearchParams(location.search);
     history.replaceState(null, '', location.pathname);
 
-    // Do not repeat silent authorization when returning to the login page.
-    sessionStorage.setItem('shopify.skipSilent', '1');
     const saved = sessionStorage.getItem('shopify.oauth');
     sessionStorage.removeItem('shopify.oauth');
     const provider = JSON.parse(saved || 'null');
@@ -283,7 +291,7 @@ The first page shows the signed-in customer's email when a PocketBase session ex
 
     const error = params.get('error');
     if (error === 'login_required') {
-      location.replace('/index.html');
+      pb.authStore.clear();
     } else if (error) {
       throw new Error('Shopify did not authorize sign-in.');
     } else {
@@ -295,8 +303,11 @@ The first page shows the signed-in customer's email when a PocketBase session ex
       await pb.collection('users').authWithOAuth2Code(
         provider.name, code, provider.codeVerifier, redirectURL,
       );
-      location.replace('/index.html');
     }
+
+    // Do not repeat the check immediately after this callback.
+    sessionStorage.setItem('shopify.skipSilent', '1');
+    location.replace('/index.html');
   </script>
 </body>
 </html>
@@ -317,7 +328,9 @@ Keep your hosting or HTTPS tunnel pointing to this server. Open `https://my-fron
 
 After sign-in, the browser returns to `index.html`, which displays `Connected as` followed by the customer's email. The PocketBase SDK stores the session in `pb.authStore`; the example reads the email from `pb.authStore.record.email` and uses `textContent` to display it safely.
 
-The **Sign out** button clears the local PocketBase session and returns to the sign-in link without trying silent sign-in again. It leaves the Shopify session active.
+If the customer signs out of Shopify, the next check on page load or return to the tab receives `login_required`, clears the local PocketBase session and displays the sign-in link. The check requires a browser redirect to Shopify and back, without a login form. It does not notify the app instantly or revoke PocketBase tokens already issued on the server.
+
+Customers sign out from Shopify. The application follows the Shopify session on the next check.
 
 If sign-in fails:
 
