@@ -184,7 +184,7 @@ If you already have an `OnServe` hook or frontend routes, merge these additions 
 
 Create a `pb_public` folder beside `go.mod`, then save the following two files inside it.
 
-The first page tries to sign in with an existing Shopify session. If the customer needs to sign in, it shows a link. The callback page checks Shopify's response and exchanges the code for a PocketBase session.
+The first page shows the signed-in customer's email when a PocketBase session exists. Otherwise, it tries to sign in with an existing Shopify session. If the customer needs to sign in, it shows a link. The callback page checks Shopify's response and exchanges the code for a PocketBase session.
 
 ### `pb_public/index.html`
 
@@ -197,6 +197,7 @@ The first page tries to sign in with an existing Shopify session. If the custome
   <title>Sign in</title>
 </head>
 <body>
+  <p id="status" role="status">Checking sign-in...</p>
   <a id="login" hidden>Sign in with Shopify</a>
 
   <script type="module">
@@ -204,11 +205,14 @@ The first page tries to sign in with an existing Shopify session. If the custome
 
     const pb = new PocketBase(location.origin);
     const redirectURL = new URL('/redirect.html', location.origin).href;
+    const status = document.getElementById('status');
     const login = document.getElementById('login');
     const skipSilent = sessionStorage.getItem('shopify.skipSilent') === '1';
     sessionStorage.removeItem('shopify.skipSilent');
 
-    if (!pb.authStore.isValid) {
+    if (pb.authStore.isValid) {
+      status.textContent = `Connected as ${pb.authStore.record.email}`;
+    } else {
       const methods = await pb.collection('users').listAuthMethods();
       const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
       if (!provider) throw new Error('Shopify is not available.');
@@ -223,6 +227,7 @@ The first page tries to sign in with an existing Shopify session. If the custome
       login.addEventListener('click', saveProvider);
 
       if (skipSilent) {
+        status.textContent = 'Not signed in.';
         login.hidden = false;
       } else {
         saveProvider();
@@ -302,7 +307,7 @@ go run . serve
 
 Keep your hosting or HTTPS tunnel pointing to this server. Open `https://my-frontend.example/index.html` and sign in with a customer account from your Shopify store.
 
-After sign-in, the browser returns to `index.html` and the PocketBase SDK stores the session in `pb.authStore`. You can check it in the browser's local storage under `pocketbase_auth`.
+After sign-in, the browser returns to `index.html`, which displays `Connected as` followed by the customer's email. The PocketBase SDK stores the session in `pb.authStore`; the example reads the email from `pb.authStore.record.email` and uses `textContent` to display it safely.
 
 If sign-in fails:
 
