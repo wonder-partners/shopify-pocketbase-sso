@@ -132,8 +132,6 @@ The callback must match the URL deployed in step 3 exactly. For a hosted deploym
 
 From the folder containing `go.mod`, install the library.
 
-If the repository is private, first configure Git with read access and run `go env -w GOPRIVATE=github.com/wonder-partners/shopify-pocketbase-sso`. If `GOPRIVATE` already contains entries, append this path to its comma-separated list instead.
-
 ```sh
 go get github.com/wonder-partners/shopify-pocketbase-sso
 ```
