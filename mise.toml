@@ -27,6 +27,10 @@ run = "go vet ./..."
 description = "Check the syntax of the JavaScript OAuth test"
 run = "node --check tests/sdk/oauth.test.mjs"
 
+[tasks."check:vuln"]
+description = "Check reachable Go vulnerabilities"
+run = "go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./..."
+
 [tasks.check]
 description = "Run tests, static analysis, build and syntax checks"
-depends = ["test", "vet", "build", "check:js"]
+depends = ["test", "vet", "build", "check:js", "check:vuln"]
