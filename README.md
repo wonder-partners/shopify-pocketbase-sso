@@ -13,7 +13,7 @@ You need:
 
 The steps below add two sign-in pages to your PocketBase server. Everything runs on the same HTTPS address. Replace the example domains with yours throughout the guide.
 
-Tested with PocketBase `0.40.5` and Go `1.27.2`.
+Tested with PocketBase `0.40.5` and Go `1.27.3`.
 
 ## 1. Prepare your store and URLs
 
