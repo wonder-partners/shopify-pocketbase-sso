@@ -149,11 +149,11 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 		return e.Next()
 	}
 	var body struct {
-		Provider     string `json:"provider"`
-		CodeVerifier string `json:"codeVerifier"`
-		Code         string `json:"code"`
-		RedirectURL  string `json:"redirectURL"`
-		RedirectUrl  string `json:"redirectUrl"` // PocketBase's deprecated alias.
+		Provider     string `json:"provider" form:"provider"`
+		CodeVerifier string `json:"codeVerifier" form:"codeVerifier"`
+		Code         string `json:"code" form:"code"`
+		RedirectURL  string `json:"redirectURL" form:"redirectURL"`
+		RedirectUrl  string `json:"redirectUrl" form:"redirectUrl"` // PocketBase's deprecated alias.
 	}
 	if err := e.BindBody(&body); err != nil {
 		return err

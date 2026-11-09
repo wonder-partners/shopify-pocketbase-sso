@@ -85,6 +85,18 @@ Other auth methods keep PocketBase's usual alert behavior.
 
 You can register PocketBase's `apis.Gzip()` before or after `Service.Register`.
 
+If middleware opens an outer transaction, compression must wrap that middleware
+so its writer stays open until the transaction commits and sends the response.
+Give compression a lower priority than the transaction middleware, for example:
+
+```go
+compression := apis.Gzip()
+compression.Priority = -2 // Outer transaction middleware uses priority -1.
+router.Bind(compression)
+```
+
+Registration order alone does not establish this ordering when the priorities differ.
+
 For custom compression, use a middleware priority lower than 1 so compression wraps the library's JSON response changes. The library's auth-methods middleware uses priority 1.
 
 The `fields` parameter on `listAuthMethods()` still works. PocketBase applies it after the library filters the provider list and updates Shopify's login URL, including in the legacy `authProviders` response.
