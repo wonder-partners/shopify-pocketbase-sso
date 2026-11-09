@@ -53,6 +53,10 @@ func projectTransactionServer(t *testing.T, f *fixture, scenario string) string 
 			return nil
 		})
 	}})
+	// Compression must remain active through the outer transaction's commit.
+	compression := apis.Gzip()
+	compression.Priority = -2
+	r.Bind(compression)
 	f.s.Register(r)
 	mux, err := r.BuildMux()
 	if err != nil {
