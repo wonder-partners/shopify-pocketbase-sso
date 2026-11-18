@@ -509,3 +509,104 @@ func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
 		t.Fatalf("expected one token exchange, got %d", tokenRequests)
 	}
 }
+
+func TestShopifyLoginOfRecognizesOnlyShopifyLogins(t *testing.T) {
+	app := committedResponseApp(t)
+	if _, ok := shopifyLoginOf(app); ok {
+		t.Fatal("a plain app was taken for a Shopify login")
+	}
+	err := app.RunInTransaction(func(tx core.App) error {
+		if _, ok := shopifyLoginOf(tx); ok {
+			t.Fatal("a plain transaction was taken for a Shopify login")
+		}
+		login := &shopifyAuthTransaction{App: tx, original: app}
+		for name, candidate := range map[string]core.App{
+			"login":                login,
+			"native response step": &authResponseApp{App: tx, transaction: login},
+		} {
+			if got, ok := shopifyLoginOf(candidate); !ok || got != login {
+				t.Fatalf("%s: login not recognized", name)
+			}
+		}
+		// Project hooks may open nested transactions; the login must survive them.
+		return login.RunInTransaction(func(nested core.App) error {
+			if got, ok := shopifyLoginOf(nested); !ok || got != login {
+				t.Fatal("nested transaction lost the Shopify login")
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShopifyLoginAfterCommit(t *testing.T) {
+	errHost := errors.New("host rolled back")
+	for _, c := range []struct {
+		name    string
+		host    bool  // the login runs inside a host transaction
+		outcome error // nil, errHost, or errCommit for a failing commit
+		want    bool
+	}{
+		{"commit", false, nil, true},
+		{"rollback", false, errHost, false},
+		{"commit failure", false, errCommit, false},
+		{"host commit", true, nil, true},
+		{"host rollback", true, errHost, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			app := committedResponseApp(t)
+			calls := 0
+			var got core.App
+			login := func(tx core.App) error {
+				l := &shopifyAuthTransaction{App: tx, original: app}
+				return l.RunInTransaction(func(core.App) error {
+					if _, err := tx.DB().NewQuery("INSERT INTO marks (id) VALUES ('m')").Execute(); err != nil {
+						return err
+					}
+					l.afterCommit(func(committedApp core.App) {
+						calls++
+						got = committedApp
+						if !committed(t, committedApp) {
+							t.Error("task ran before the login was committed")
+						}
+					})
+					if calls != 0 {
+						t.Error("task ran inside the transaction")
+					}
+					return nil
+				})
+			}
+			err := app.RunInTransaction(func(tx core.App) error {
+				if c.host {
+					if err := login(tx); err != nil {
+						return err
+					}
+					if calls != 0 {
+						t.Error("task ran before the host transaction completed")
+					}
+				} else if err := login(tx); err != nil {
+					return err
+				}
+				if c.outcome == errCommit {
+					_, err := tx.DB().NewQuery("INSERT INTO commit_child (parent_id) VALUES ('missing')").Execute()
+					return err
+				}
+				return c.outcome
+			})
+			if (err == nil) != (c.outcome == nil) {
+				t.Fatalf("unexpected transaction result: %v", err)
+			}
+			if c.want != (calls == 1) || calls > 1 {
+				t.Fatalf("task ran %d times", calls)
+			}
+			if c.want && (got != app || got.TxInfo() != nil) {
+				t.Fatal("task did not receive the non-transactional app")
+			}
+		})
+	}
+}
+
+// errCommit marks a case whose COMMIT fails on a deferred foreign key.
+var errCommit = errors.New("commit failure")
