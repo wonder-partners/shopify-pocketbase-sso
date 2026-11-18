@@ -24,7 +24,7 @@ func ensureCollection(app core.App, collectionName string) error {
 		if !c.IsAuth() || c.Name == core.CollectionNameSuperusers {
 			return errors.New("Shopify requires a non-superuser auth collection")
 		}
-		return ensureAccountsCollection(tx, c)
+		return ensureIdentityStore(tx, c)
 	})
 }
 
@@ -75,7 +75,7 @@ func (s *Service) configureProvider() error {
 		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
 			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
 			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
-				if err := putAccount(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID, p.previousAccount); err != nil {
+				if err := saveIdentity(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID, p.previousIdentity); err != nil {
 					return e.InternalServerError("Unable to save the private Shopify identity.", nil)
 				}
 			}
@@ -86,14 +86,9 @@ func (s *Service) configureProvider() error {
 		Id: "studio_shopify_auth_alert", Priority: -1000, Func: deferShopifyAuthAlert,
 	})
 	s.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordRequestEvent]{
-		Id: "studio_shopify_unlink", Priority: -1000, Func: s.unlinkShopifyAccount,
+		Id: "studio_shopify_unlink", Priority: -1000, Func: s.unlinkShopifyIdentity,
 	})
-	s.app.OnRecordDeleteExecute(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_revoke", Priority: -1000, Func: s.revokeShopifyAccount,
-	})
-	s.app.OnRecordUpdateExecute(c.Id).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_verified_revoke", Priority: -1000, Func: revokeUnverifiedShopifyAccounts,
-	})
+	bindIdentityRevocation(s.app, c.Id)
 	return nil
 }
 
@@ -107,14 +102,13 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	}
 	// Native OAuth can find a record by verified email or current auth header.
 	// Neither is sufficient for our policy: require an existing Shopify identity.
-	a, err := e.App.FindFirstRecordByFilter(accountsCollectionName,
-		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	identity, err := findIdentity(e.App, s.issuer, p.subject)
+	if err != nil {
 		return err
 	}
 	var r *core.Record
-	if a != nil {
-		r, err = e.App.FindRecordById(s.collectionID, a.GetString("user"))
+	if identity != nil {
+		r, err = e.App.FindRecordById(s.collectionID, identity.account())
 		if err != nil {
 			return err
 		}
@@ -124,7 +118,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	// exact native identity link, never from an email/header fallback candidate.
 	link, err := e.App.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"collectionRef": e.Collection.Id, "provider": providerName,
-		"providerId": identityID(s.issuer, p.subject),
+		"providerId": oauthLinkProviderID(s.issuer, p.subject),
 	})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -152,7 +146,7 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
 	}
 	e.Set(trustedProfileKey, p)
-	p.previousAccount = a
+	p.previousIdentity = identity
 	if r == nil {
 		if e.CreateData == nil {
 			e.CreateData = map[string]any{}

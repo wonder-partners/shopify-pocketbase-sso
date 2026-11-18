@@ -75,7 +75,7 @@ func TestShopifyAuthAlertFailureDoesNotRejectLogin(t *testing.T) {
 	useNewDevice(f)
 	delivered := make(chan bool, 1)
 	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
-		_, err := e.App.FindFirstRecordByFilter(accountsCollectionName, "user = {:user}", map[string]any{"user": e.Record.Id})
+		_, err := e.App.FindFirstRecordByFilter(identitiesCollectionName, "user = {:user}", map[string]any{"user": e.Record.Id})
 		delivered <- e.App.TxInfo() == nil && err == nil
 		return errors.New("simulated mail delivery failure")
 	})

@@ -134,7 +134,7 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "identity_storage":
-				f.app.OnRecordCreate(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
+				f.app.OnRecordCreate(identitiesCollectionName).BindFunc(func(e *core.RecordEvent) error {
 					return errors.New("identity storage unavailable")
 				})
 			}
@@ -144,7 +144,7 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 				status = http.StatusInternalServerError
 			}
 			f.expect(f.completeCallback(f.authorize(false)), status)
-			for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName} {
+			for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName} {
 				count, err := f.app.CountRecords(collection)
 				if err != nil || count != 0 {
 					t.Fatalf("rejected signup left records in %s", collection)
@@ -172,7 +172,7 @@ func TestShopifyAuthHookCanWriteItsOwnResponse(t *testing.T) {
 	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
 		t.Fatal("custom HTTP response lost the Shopify link", err)
 	}
-	privateAccount(f, user.Id)
+	privateIdentity(f, user.Id)
 }
 
 func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
@@ -206,7 +206,7 @@ func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
 	if err != nil || after.Email() != f.mock.ProfileEmail || !after.Verified() {
 		t.Fatal("accepted Shopify factor did not synchronize the profile")
 	}
-	privateAccount(f, user.Id)
+	privateIdentity(f, user.Id)
 	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
 		t.Fatal("verification upgrade lost the Shopify link during MFA", err)
 	}
@@ -237,7 +237,7 @@ func TestShopifyDenialAfterMFAIsRolledBack(t *testing.T) {
 	if strings.Contains(result.body, "mfaId") {
 		t.Fatal("rejected MFA attempt exposed a challenge or auth token")
 	}
-	for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+	for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName, core.CollectionNameMFAs} {
 		count, err := f.app.CountRecords(collection)
 		if err != nil || count != 0 {
 			t.Fatalf("rejected MFA attempt left records in %s", collection)
@@ -305,7 +305,7 @@ func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
 						t.Fatal("policy response was not a single intact JSON document", err)
 					}
 				}
-				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName, core.CollectionNameMFAs} {
 					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
 						t.Fatal("HTTP denial after MFA persisted records in", collection, err)
 					}
@@ -336,7 +336,7 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 			f := setup(t, "email")
 			f.login()
 			_, before := f.authRecord()
-			accountID := privateAccount(f, before.Id).Id
+			identityRecordID := privateIdentity(f, before.Id).Id
 			f.mock.Fault = ""
 			f.mock.ProfileEmail = "changed@example.test"
 			wrap := func(e *core.RequestEvent, next func() error) error {
@@ -362,7 +362,7 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 			f.loginShop()
 			result := f.completeCallback(f.authorize(false))
 			after, err := f.app.FindRecordById("users", before.Id)
-			if err != nil || privateAccount(f, before.Id).Id != accountID {
+			if err != nil || privateIdentity(f, before.Id).Id != identityRecordID {
 				t.Fatal("nested transaction lost the account or private identity", err)
 			}
 			if strings.HasSuffix(stage, "_denied") {
@@ -391,11 +391,11 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			f := setup(t, "email")
 			var before *core.Record
-			var accountID, linkID string
+			var identityRecordID, linkID string
 			if stage != "signup" {
 				f.login()
 				_, before = f.authRecord()
-				accountID = privateAccount(f, before.Id).Id
+				identityRecordID = privateIdentity(f, before.Id).Id
 				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": before.Id})
 				if err != nil {
 					t.Fatal(err)
@@ -438,7 +438,7 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 				t.Fatal("serialization failure sent a login alert")
 			}
 			if before == nil {
-				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName} {
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName} {
 					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
 						t.Fatal("failed signup serialization left records in", collection, err)
 					}
@@ -449,7 +449,7 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 			if err != nil || after.Email() != before.Email() || after.Verified() != before.Verified() || after.EmailVisibility() {
 				t.Fatal("serialization failure committed a profile or project DB change", err)
 			}
-			if privateAccount(f, before.Id).Id != accountID {
+			if privateIdentity(f, before.Id).Id != identityRecordID {
 				t.Fatal("serialization failure replaced the private identity")
 			}
 			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, linkID); err != nil {

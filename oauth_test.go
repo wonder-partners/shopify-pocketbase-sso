@@ -37,7 +37,7 @@ func TestConfiguredAuthCollection(t *testing.T) {
 			if user.Collection().Name != "members" {
 				t.Fatal("Shopify authenticated into the wrong collection")
 			}
-			private := privateAccount(f, user.Id)
+			private := privateIdentity(f, user.Id)
 			relation := private.Collection().Fields.GetByName("user").(*core.RelationField)
 			if relation.CollectionId != user.Collection().Id {
 				t.Fatal("identity storage targets the wrong auth collection")
@@ -87,7 +87,7 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 				}
 				f.loginShop()
 				f.expect(f.completeCallback(f.authorize(false)), 409)
-				for _, collection := range []string{core.CollectionNameExternalAuths, accountsCollectionName} {
+				for _, collection := range []string{core.CollectionNameExternalAuths, identitiesCollectionName} {
 					count, err := f.app.CountRecords(collection)
 					if err != nil || count != 0 {
 						t.Fatal("renamed collection linked a conflicting Shopify identity")
@@ -98,8 +98,8 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 
 			first := decodeAuth(t, f.login())
 			userID := first.Record["id"].(string)
-			account := privateAccount(f, userID)
-			if account.GetString("issuer") != f.s.issuer || account.GetString("subject") != "shopify-customer-sub-12345" {
+			identity := privateIdentity(f, userID)
+			if identity.GetString("issuer") != f.s.issuer || identity.GetString("subject") != "shopify-customer-sub-12345" {
 				t.Fatal("renamed collection did not save the verified Shopify identity")
 			}
 			f.mock.ProfileEmail = "changed@example.test"
@@ -138,7 +138,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	result := f.request("POST", f.api.URL+"/api/collections/"+users.Id+"/auth-with-oauth2", f.api.URL, body, "")
 	f.expect(result, 200)
 	userID := decodeAuth(t, result).Record["id"].(string)
-	a := privateAccount(f, userID)
+	a := privateIdentity(f, userID)
 	relation := a.Collection().Fields.GetByName("user").(*core.RelationField)
 	if relation.CollectionId != users.Id {
 		t.Fatal("private Shopify identity is not linked to users")
@@ -171,7 +171,7 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"provider": providerName, "recordRef": user.Id,
 	})
-	if err != nil || link.ProviderId() != identityID(f.s.issuer, privateAccount(f, user.Id).GetString("subject")) {
+	if err != nil || link.ProviderId() != oauthLinkProviderID(f.s.issuer, privateIdentity(f, user.Id).GetString("subject")) {
 		t.Fatal("missing native identity link")
 	}
 	if first.Meta["accessToken"] != "" || first.Meta["refreshToken"] != "" || strings.Contains(string(mustJSON(t, first.Meta)), "id_token") {
@@ -200,7 +200,7 @@ func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
 			if user.Verified() {
 				t.Fatal("expected an initially unverified Shopify email")
 			}
-			accountID := privateAccount(f, user.Id).Id
+			identityRecordID := privateIdentity(f, user.Id).Id
 			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
 				"collectionRef": user.Collection().Id, "recordRef": user.Id, "provider": providerName,
 			})
@@ -236,7 +236,7 @@ func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
 					t.Fatal("verification lost the native Shopify identity link", err)
 				}
 				count, err := f.app.CountRecords(core.CollectionNameExternalAuths)
-				if err != nil || count != 1 || privateAccount(f, user.Id).Id != accountID {
+				if err != nil || count != 1 || privateIdentity(f, user.Id).Id != identityRecordID {
 					t.Fatal("verification left stale links or changed the private identity")
 				}
 				f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", result.Token), 200)
@@ -441,7 +441,7 @@ func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
 	if err := f.app.Save(legacy); err != nil {
 		t.Fatal(err)
 	}
-	if err := putAccount(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345", nil); err != nil {
+	if err := saveIdentity(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345", nil); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := legacy.NewAuthToken()
@@ -465,7 +465,7 @@ func TestShopifyProviderRegistrationAndIdentityNamespace(t *testing.T) {
 	if err != nil || !p.PKCE() {
 		t.Fatal("Shopify provider was not registered")
 	}
-	if identityID("issuer-a", "123") == identityID("issuer-b", "123") {
+	if oauthLinkProviderID("issuer-a", "123") == oauthLinkProviderID("issuer-b", "123") {
 		t.Fatal("provider identity ignores its issuer")
 	}
 	if _, err := p.FetchAuthUser(nil); err == nil {
@@ -518,7 +518,7 @@ func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T
 	r := f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, string(mustJSON(t, body)), "")
 	f.expect(r, 200)
 	result := decodeAuth(t, r)
-	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateAccount(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
+	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateIdentity(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
 		t.Fatal("client-controlled createData overrode the verified provider profile")
 	}
 	for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {

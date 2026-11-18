@@ -24,7 +24,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 		t.Fatal("official SDK authWithOAuth2Code integration failed:", err)
 	}
 	users, err := f.app.FindAllRecords("users")
-	if err != nil || len(users) != 1 || privateAccount(f, users[0].Id).GetString("subject") != "900719925474099312345" {
+	if err != nil || len(users) != 1 || privateIdentity(f, users[0].Id).GetString("subject") != "900719925474099312345" {
 		t.Fatal("official SDK login did not preserve the exact subject in private storage")
 	}
 }

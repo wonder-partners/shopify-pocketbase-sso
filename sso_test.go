@@ -388,7 +388,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 			f := setup(t, tc.fault)
 			f.login()
 			_, record := f.authRecord()
-			if privateAccount(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
+			if privateIdentity(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
 				t.Fatal("numeric subject or profile was not preserved exactly")
 			}
 		})
@@ -564,7 +564,7 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f := setup(t, "")
 	f.login()
 	_, r := f.authRecord()
-	account := privateAccount(f, r.Id)
+	identity := privateIdentity(f, r.Id)
 	f.mock.ProfileEmail = "new@example.test"
 	f.login()
 	_, updated := f.authRecord()
@@ -574,7 +574,7 @@ func TestShopifySubjectSurvivesEmailChangeAndNeverMerges(t *testing.T) {
 	f.mock.Subject = "different-shopify-subject"
 	f.expect(f.completeCallback(f.authorize(false)), 409)
 	unchanged, err := f.app.FindRecordById(collectionName, r.Id)
-	if err != nil || unchanged.Email() != updated.Email() || privateAccount(f, r.Id).GetString("subject") != account.GetString("subject") {
+	if err != nil || unchanged.Email() != updated.Email() || privateIdentity(f, r.Id).GetString("subject") != identity.GetString("subject") {
 		t.Fatal("existing account changed")
 	}
 }

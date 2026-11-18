@@ -2,10 +2,8 @@ package shopifysso
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -46,20 +44,15 @@ func init() {
 
 type shopifyProvider struct {
 	auth.BaseProvider
-	service         *Service
-	subject         string
-	profile         *customer
-	claims          claims
-	token           *oauth2.Token
-	previousAccount *core.Record
+	service          *Service
+	subject          string
+	profile          *customer
+	claims           claims
+	token            *oauth2.Token
+	previousIdentity *shopifyIdentity
 }
 
 var _ auth.Provider = (*shopifyProvider)(nil)
-
-func identityID(issuer, subject string) string {
-	// Namespace identities by issuer without rounding numeric Shopify subjects.
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(issuer+"\x00"+subject)))
-}
 
 // PocketBase generates a fresh S256 challenge in listAuthMethods. Reuse that
 // random public value as the OIDC nonce, never the secret verifier. This lets
@@ -131,7 +124,7 @@ func (p *shopifyProvider) FetchAuthUser(token *oauth2.Token) (*auth.AuthUser, er
 		return nil, errors.New("Shopify identity has not been verified")
 	}
 	u := &auth.AuthUser{
-		Id:      identityID(p.service.issuer, p.subject),
+		Id:      oauthLinkProviderID(p.service.issuer, p.subject),
 		RawUser: map[string]any{}, // Technical identifiers stay in the private collection.
 	}
 	// PocketBase treats AuthUser.Email as verified. Keep an unverified email

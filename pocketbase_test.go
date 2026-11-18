@@ -208,7 +208,7 @@ func TestShopifyDoesNotClaimAnExistingPasswordAccountByEmail(t *testing.T) {
 	f.loginShop()
 	f.expect(f.completeCallback(f.authorize(true)), 409)
 	r, err := f.app.FindRecordById("users", native.Record["id"].(string))
-	count, countErr := f.app.CountRecords(accountsCollectionName)
+	count, countErr := f.app.CountRecords(identitiesCollectionName)
 	if err != nil || r.Email() != "camille@example.test" || countErr != nil || count != 0 {
 		t.Fatal("password account was silently linked by email")
 	}

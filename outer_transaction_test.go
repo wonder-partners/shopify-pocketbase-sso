@@ -61,7 +61,7 @@ func TestShopifyUnlinkWaitsForOuterTransaction(t *testing.T) {
 			f := setup(t, "")
 			f.login()
 			token, user := f.authRecord()
-			accountID := privateAccount(f, user.Id).Id
+			identityRecordID := privateIdentity(f, user.Id).Id
 			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
 			if err != nil {
 				t.Fatal(err)
@@ -74,7 +74,7 @@ func TestShopifyUnlinkWaitsForOuterTransaction(t *testing.T) {
 			} else {
 				f.expect(result, http.StatusForbidden)
 			}
-			for _, target := range []struct{ collection, id string }{{core.CollectionNameExternalAuths, link.Id}, {accountsCollectionName, accountID}} {
+			for _, target := range []struct{ collection, id string }{{core.CollectionNameExternalAuths, link.Id}, {identitiesCollectionName, identityRecordID}} {
 				_, err := f.app.FindRecordById(target.collection, target.id)
 				if accepted {
 					if !errors.Is(err, sql.ErrNoRows) {
@@ -135,7 +135,7 @@ func TestShopifyAuthWaitsForOuterTransaction(t *testing.T) {
 			if _, err := f.app.FindMFAById(challenge.MFAID); err != nil {
 				t.Fatal("outer commit lost the MFA challenge", err)
 			}
-			for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+			for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName, core.CollectionNameMFAs} {
 				if count, err := f.app.CountRecords(collection); err != nil || count != 1 {
 					t.Fatalf("unexpected records in %s: %d, %v", collection, count, err)
 				}
