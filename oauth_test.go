@@ -99,7 +99,7 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 			first := decodeAuth(t, f.login())
 			userID := first.Record["id"].(string)
 			identity := privateIdentity(f, userID)
-			if identity.GetString("issuer") != f.s.issuer || identity.GetString("subject") != "shopify-customer-sub-12345" {
+			if identity.GetString("issuer") != (f.store.URL+"/identity") || identity.GetString("subject") != "shopify-customer-sub-12345" {
 				t.Fatal("renamed collection did not save the verified Shopify identity")
 			}
 			f.mock.ProfileEmail = "changed@example.test"
@@ -171,7 +171,7 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"provider": providerName, "recordRef": user.Id,
 	})
-	if err != nil || link.ProviderId() != oauthLinkProviderID(f.s.issuer, privateIdentity(f, user.Id).GetString("subject")) {
+	if err != nil || link.ProviderId() != oauthLinkProviderID((f.store.URL+"/identity"), privateIdentity(f, user.Id).GetString("subject")) {
 		t.Fatal("missing native identity link")
 	}
 	if first.Meta["accessToken"] != "" || first.Meta["refreshToken"] != "" || strings.Contains(string(mustJSON(t, first.Meta)), "id_token") {
@@ -304,7 +304,7 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	f.client.Jar, _ = cookiejar.New(nil)
 	data["redirectURL"] = "https://evil.example/callback"
 	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 400)
-	data["redirectURL"] = f.s.oauth.RedirectURL
+	data["redirectURL"] = f.s.cfg.RedirectURL
 	r := f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), "")
 	f.expect(r, 200)
 	if len(r.cookies) != 0 || r.headers.Get("Cache-Control") != "no-store" {
@@ -314,7 +314,9 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 }
 
 func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
-	for _, fault := range []string{"code_expired", "missing", "short", "long", "characters", "wrong"} {
+	// Expired codes and wrong verifiers are refused by the store; see
+	// TestStoreRejectsInvalidLogins. Malformed verifiers never reach it.
+	for _, fault := range []string{"missing", "short", "long", "characters"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "")
 			f.loginStore()
@@ -323,9 +325,6 @@ func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 			data := callbackData(t, page.body)
 			status := 400
 			switch fault {
-			case "code_expired":
-				f.mock.Fault = fault
-				status = 502
 			case "missing":
 				data["codeVerifier"] = ""
 			case "short":
@@ -334,9 +333,6 @@ func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 				data["codeVerifier"] = strings.Repeat("a", 129)
 			case "characters":
 				data["codeVerifier"] = strings.Repeat("!", 43)
-			case "wrong":
-				data["codeVerifier"] = strings.Repeat("a", 43)
-				status = 502
 			}
 			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), status)
 		})
@@ -356,7 +352,7 @@ func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
 		t.Fatal("secret verifier leaked into authorization URL")
 	}
 	p := &shopifyProvider{}
-	p.SetAuthURL(f.s.oauth.Endpoint.AuthURL)
+	p.SetAuthURL(f.s.store.authURL())
 	if p.BuildAuthURL("state") != "" {
 		t.Fatal("provider allowed authorization without S256 PKCE")
 	}

@@ -92,15 +92,14 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 		return e.Next()
 	}
 	p, ok := e.ProviderClient.(*shopifyProvider)
-	if !ok || p.service != s || p.profile == nil {
+	if !ok || p.service != s || p.token == nil {
 		return e.ForbiddenError("Missing verified Shopify identity.", nil)
 	}
 	// Native OAuth proposes e.Record by verified email or current auth header.
 	// The Shopify login only accepts it when it is the customer's own account.
-	login, err := startShopifyLogin(e.App, s.collectionID, verifiedCustomer{
-		issuer: s.issuer, subject: p.subject, customerID: p.profile.ID,
-		email: p.profile.EmailAddress.Email, emailVerified: e.OAuth2User.Email != "",
-	}, e.Record)
+	customer := p.customer
+	customer.emailVerified = e.OAuth2User.Email != ""
+	login, err := startShopifyLogin(e.App, s.collectionID, customer, e.Record)
 	if err != nil {
 		return err
 	}

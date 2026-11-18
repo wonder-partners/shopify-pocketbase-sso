@@ -2,7 +2,6 @@ package shopifysso
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"net/http"
 	"net/url"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/auth"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -46,11 +44,9 @@ func init() {
 
 type shopifyProvider struct {
 	auth.BaseProvider
-	service *Service
-	subject string
-	profile *customer
-	claims  claims
-	token   *oauth2.Token
+	service  *Service
+	customer verifiedCustomer
+	token    *oauth2.Token
 }
 
 var _ auth.Provider = (*shopifyProvider)(nil)
@@ -78,7 +74,7 @@ func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*
 		return nil, errors.New("a native Shopify OAuth request with PKCE is required")
 	}
 	s := flow.service
-	if p.RedirectURL() != s.oauth.RedirectURL || p.ClientId() != s.cfg.ClientID {
+	if p.RedirectURL() != s.cfg.RedirectURL || p.ClientId() != s.cfg.ClientID {
 		return nil, errors.New("invalid Shopify client or redirect URL")
 	}
 	if flow.prepared != nil {
@@ -86,52 +82,29 @@ func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*
 			return nil, errors.New("Shopify code differs from the verified request")
 		}
 		verified := flow.prepared
-		p.service, p.subject = verified.service, verified.subject
-		p.profile, p.claims, p.token = verified.profile, verified.claims, verified.token
+		p.service, p.customer, p.token = verified.service, verified.customer, verified.token
 		return p.token, nil
 	}
-	ctx := oidc.ClientContext(p.Context(), s.client)
-	// Exchange as a public PKCE client, never using PocketBase's config marker.
-	token, err := s.oauth.Exchange(ctx, code, oauth2.VerifierOption(flow.verifier))
+	customer, token, err := s.store.verify(p.Context(), code, flow.verifier)
 	if err != nil {
-		return nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
+		return nil, err
 	}
-	raw, _ := token.Extra("id_token").(string)
-	id, err := s.verifier.Verify(ctx, raw)
-	if err != nil {
-		reason := idTokenFailureReason(err)
-		s.app.Logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
-		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify ID token ("+reason+").", nil)
-	}
-	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(oauth2.S256ChallengeFromVerifier(flow.verifier))) != 1 || id.Subject == "" {
-		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify nonce or subject.", nil)
-	}
-	if id.AccessTokenHash != "" && id.VerifyAccessToken(token.AccessToken) != nil {
-		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid access token hash.", nil)
-	}
-	if id.Claims(&p.claims) != nil {
-		return nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify claims.", nil)
-	}
-	p.profile, err = s.fetchCustomer(ctx, token.AccessToken)
-	if err != nil {
-		return nil, router.NewApiError(http.StatusBadGateway, "Unable to read the Shopify customer. Check Customer Account API permissions.", nil)
-	}
-	p.service, p.subject, p.token = s, id.Subject, token
+	p.service, p.customer, p.token = s, customer, token
 	return token, nil
 }
 
 func (p *shopifyProvider) FetchAuthUser(token *oauth2.Token) (*auth.AuthUser, error) {
-	if p.profile == nil || p.token != token {
+	if p.token == nil || p.token != token {
 		return nil, errors.New("Shopify identity has not been verified")
 	}
 	u := &auth.AuthUser{
-		Id:      oauthLinkProviderID(p.service.issuer, p.subject),
+		Id:      oauthLinkProviderID(p.customer.issuer, p.customer.subject),
 		RawUser: map[string]any{}, // Technical identifiers stay in the private collection.
 	}
 	// PocketBase treats AuthUser.Email as verified. Keep an unverified email
 	// exclusively in the trusted record payload, never in this verified field.
-	if p.claims.EmailVerified && strings.EqualFold(p.claims.Email, p.profile.EmailAddress.Email) {
-		u.Email = p.profile.EmailAddress.Email
+	if p.customer.emailVerified {
+		u.Email = p.customer.email
 	}
 	// Do not expose upstream access/refresh tokens in PocketBase's auth meta.
 	u.Expiry.Scan(token.Expiry)
@@ -167,7 +140,7 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if len(parts) != 5 || (parts[3] != c.Name && parts[3] != c.Id) {
 		return e.ForbiddenError("Shopify is not configured for this auth collection.", nil)
 	}
-	if !s.isReady() {
+	if !s.store.ready() {
 		e.Response.Header().Set("Retry-After", "5")
 		return router.NewApiError(http.StatusServiceUnavailable, "Shopify authentication is temporarily unavailable.", nil)
 	}

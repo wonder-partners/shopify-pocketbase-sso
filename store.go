@@ -3,28 +3,151 @@ package shopifysso
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
 
-// Config selects the trusted Shopify store, public OAuth client and host collection.
-// Configuration is supplied by the host; this package does not read environment variables.
-type Config struct {
-	StoreURL          string
-	RedirectURL       string // Full callback URL chosen and served by the host frontend.
-	ClientID          string
-	AuthCollection    string // Existing auth collection name or ID. Defaults to users.
-	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
+// store is the one Shopify store whose customers can log in. It runs
+// discovery in the background and verifies each login code. Discovery results
+// are published by closing readyCh, then remain immutable.
+type store struct {
+	cfg           Config
+	client        *http.Client
+	logger        func() *slog.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	readyCh, done chan struct{}
+
+	oauth           oauth2.Config
+	verifier        *oidc.IDTokenVerifier
+	issuer, graphql string
+}
+
+// startStore discovers the store's endpoints in the background, retrying until
+// it succeeds or ctx is canceled. cfg must already be validated.
+func startStore(ctx context.Context, cfg Config, logger func() *slog.Logger) *store {
+	callback, _ := url.Parse(cfg.RedirectURL)
+	origin := callback.Scheme + "://" + callback.Host
+	st := &store{cfg: cfg, logger: logger, client: &http.Client{
+		Timeout: 10 * time.Second, Transport: storeTransport{origin: origin},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
+	st.ctx, st.cancel = context.WithCancel(ctx)
+	st.readyCh, st.done = make(chan struct{}), make(chan struct{})
+	go st.discoverInBackground()
+	return st
+}
+
+// ready reports whether discovery succeeded and the store is not stopped.
+func (st *store) ready() bool {
+	if st.ctx.Err() != nil {
+		return false
+	}
+	select {
+	case <-st.readyCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// authURL is the store's authorization endpoint, or "" until it is ready.
+func (st *store) authURL() string {
+	if !st.ready() {
+		return ""
+	}
+	return st.oauth.Endpoint.AuthURL
+}
+
+// stop cancels discovery and waits for it to finish. It is safe to repeat.
+func (st *store) stop() {
+	st.cancel()
+	<-st.done
+}
+
+func (st *store) discoverInBackground() {
+	defer close(st.done)
+	delay := time.Second
+	for st.ctx.Err() == nil {
+		ctx, cancel := context.WithTimeout(st.ctx, 20*time.Second)
+		err := st.discover(ctx)
+		cancel()
+		if err == nil && st.ctx.Err() == nil {
+			// Provider configuration and hooks are already installed by New.
+			// Runtime endpoints need no database write or writer acquisition.
+			close(st.readyCh)
+			st.logger().Info("Shopify authentication is ready")
+			return
+		}
+		if st.ctx.Err() != nil {
+			return
+		}
+		st.logger().Warn("Shopify discovery unavailable; retrying", "error", err, "retry_in", delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-st.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = min(2*delay, time.Minute)
+	}
+}
+
+// verify exchanges a login code as a public PKCE client and checks everything
+// Shopify returns: the ID token (signature, issuer, audience, expiry, nonce,
+// access token hash) and the customer profile. Refusals are HTTP errors whose
+// messages carry only fixed diagnostic labels.
+func (st *store) verify(ctx context.Context, code, codeVerifier string) (verifiedCustomer, *oauth2.Token, error) {
+	if !st.ready() {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusServiceUnavailable, "Shopify authentication is temporarily unavailable.", nil)
+	}
+	ctx = oidc.ClientContext(ctx, st.client)
+	// Exchange as a public PKCE client, never using PocketBase's config marker.
+	token, err := st.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
+	if err != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
+	}
+	raw, _ := token.Extra("id_token").(string)
+	id, err := st.verifier.Verify(ctx, raw)
+	if err != nil {
+		reason := idTokenFailureReason(err)
+		st.logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify ID token ("+reason+").", nil)
+	}
+	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(oauth2.S256ChallengeFromVerifier(codeVerifier))) != 1 || id.Subject == "" {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify nonce or subject.", nil)
+	}
+	if id.AccessTokenHash != "" && id.VerifyAccessToken(token.AccessToken) != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid access token hash.", nil)
+	}
+	var c claims
+	if id.Claims(&c) != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify claims.", nil)
+	}
+	profile, err := st.fetchCustomer(ctx, token.AccessToken)
+	if err != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusBadGateway, "Unable to read the Shopify customer. Check Customer Account API permissions.", nil)
+	}
+	return verifiedCustomer{
+		issuer: st.issuer, subject: id.Subject, customerID: profile.ID, email: profile.EmailAddress.Email,
+		// PocketBase treats a provider email as verified. Only trust a verified
+		// ID token claim that matches the customer profile.
+		emailVerified: c.EmailVerified && strings.EqualFold(c.Email, profile.EmailAddress.Email),
+	}, token, nil
 }
 
 type discovery struct {
@@ -45,25 +168,6 @@ type customer struct {
 type claims struct {
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
-}
-
-// The trusted store URL is operator configuration, never a request parameter.
-func checkURL(raw string, allowHTTP, originOnly bool) error {
-	u, err := url.Parse(raw)
-	if err != nil || u == nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("invalid configured URL")
-	}
-	if originOnly && u.Path != "" {
-		return errors.New("configure an origin without a path or trailing slash")
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	ip := net.ParseIP(u.Hostname())
-	if allowHTTP && u.Scheme == "http" && (u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())) {
-		return nil
-	}
-	return errors.New("HTTPS required; HTTP is allowed only on explicit loopback development URLs")
 }
 
 type storeTransport struct{ origin string }
@@ -88,37 +192,37 @@ func readJSON(client *http.Client, req *http.Request, target any) error {
 	return json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(target)
 }
 
-func (s *Service) discover(ctx context.Context) error {
+func (st *store) discover(ctx context.Context) error {
 	var d discovery
-	req, _ := http.NewRequestWithContext(ctx, "GET", s.cfg.StoreURL+"/.well-known/openid-configuration", nil)
-	if err := readJSON(s.client, req, &d); err != nil {
+	req, _ := http.NewRequestWithContext(ctx, "GET", st.cfg.StoreURL+"/.well-known/openid-configuration", nil)
+	if err := readJSON(st.client, req, &d); err != nil {
 		return fmt.Errorf("OpenID discovery: %w", err)
 	}
 	for _, endpoint := range []string{d.Issuer, d.AuthURL, d.TokenURL, d.JWKSURL} {
-		if err := checkURL(endpoint, s.cfg.AllowLoopbackHTTP, false); err != nil {
+		if err := checkURL(endpoint, st.cfg.AllowLoopbackHTTP, false); err != nil {
 			return fmt.Errorf("discovery endpoint: %w", err)
 		}
 	}
 	var api struct {
 		GraphQL string `json:"graphql_api"`
 	}
-	req, _ = http.NewRequestWithContext(ctx, "GET", s.cfg.StoreURL+"/.well-known/customer-account-api", nil)
-	if err := readJSON(s.client, req, &api); err != nil {
+	req, _ = http.NewRequestWithContext(ctx, "GET", st.cfg.StoreURL+"/.well-known/customer-account-api", nil)
+	if err := readJSON(st.client, req, &api); err != nil {
 		return fmt.Errorf("API discovery: %w", err)
 	}
-	if err := checkURL(api.GraphQL, s.cfg.AllowLoopbackHTTP, false); err != nil {
+	if err := checkURL(api.GraphQL, st.cfg.AllowLoopbackHTTP, false); err != nil {
 		return err
 	}
-	s.issuer, s.graphql = d.Issuer, api.GraphQL
-	s.oauth = oauth2.Config{
-		ClientID:    s.cfg.ClientID,
-		RedirectURL: s.cfg.RedirectURL,
+	st.issuer, st.graphql = d.Issuer, api.GraphQL
+	st.oauth = oauth2.Config{
+		ClientID:    st.cfg.ClientID,
+		RedirectURL: st.cfg.RedirectURL,
 		Scopes:      []string{"openid", "email", "customer-account-api:full"},
 		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
 	}
-	keyCtx := oidc.ClientContext(s.ctx, s.client)
-	s.verifier = oidc.NewVerifier(d.Issuer, shopifySubjectKeySet{oidc.NewRemoteKeySet(keyCtx, d.JWKSURL)}, &oidc.Config{
-		ClientID: s.cfg.ClientID, SupportedSigningAlgs: d.Algorithms,
+	keyCtx := oidc.ClientContext(st.ctx, st.client)
+	st.verifier = oidc.NewVerifier(d.Issuer, shopifySubjectKeySet{oidc.NewRemoteKeySet(keyCtx, d.JWKSURL)}, &oidc.Config{
+		ClientID: st.cfg.ClientID, SupportedSigningAlgs: d.Algorithms,
 	})
 	return nil
 }
@@ -156,9 +260,9 @@ func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) (
 	return json.Marshal(fields)
 }
 
-func (s *Service) fetchCustomer(ctx context.Context, accessToken string) (*customer, error) {
+func (st *store) fetchCustomer(ctx context.Context, accessToken string) (*customer, error) {
 	body, _ := json.Marshal(map[string]string{"query": `query StudioCustomer { customer { id emailAddress { emailAddress } } }`})
-	req, _ := http.NewRequestWithContext(ctx, "POST", s.graphql, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST", st.graphql, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// Shopify Customer Account API uses the raw token here, without "Bearer".
 	req.Header.Set("Authorization", accessToken)
@@ -168,7 +272,7 @@ func (s *Service) fetchCustomer(ctx context.Context, accessToken string) (*custo
 		} `json:"data"`
 		Errors []json.RawMessage `json:"errors"`
 	}
-	if err := readJSON(s.client, req, &result); err != nil {
+	if err := readJSON(st.client, req, &result); err != nil {
 		return nil, err
 	}
 	if len(result.Errors) > 0 {

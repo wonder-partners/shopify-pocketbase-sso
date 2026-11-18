@@ -47,7 +47,7 @@ func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	if json.Unmarshal(captured.Bytes(), &result) != nil || result == nil {
 		return e.InternalServerError("Unable to read the authentication methods response.", nil)
 	}
-	ready := s.isReady()
+	ready := s.store.ready()
 	filter := func(value any) []any {
 		providers, _ := value.([]any)
 		filtered := make([]any, 0, len(providers))
@@ -62,7 +62,7 @@ func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 				if !ok {
 					continue // Do not advertise an incomplete native PKCE URL.
 				}
-				provider["authURL"] = s.oauth.Endpoint.AuthURL + "?" + query
+				provider["authURL"] = s.store.authURL() + "?" + query
 				provider["authUrl"] = provider["authURL"]
 			}
 			filtered = append(filtered, item)

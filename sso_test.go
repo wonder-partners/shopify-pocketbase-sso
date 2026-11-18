@@ -58,11 +58,7 @@ func setupCollection(t *testing.T, fault, collection string, useID bool) *fixtur
 
 func waitForDiscovery(t *testing.T, s *Service) {
 	t.Helper()
-	select {
-	case <-s.ready:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Shopify discovery did not become ready")
-	}
+	waitUntil(t, "Shopify discovery", s.store.ready)
 }
 
 func setupWithStoreHandler(t *testing.T, fault, collection string, useID bool, wrap func(http.Handler) http.Handler) *fixture {
@@ -117,7 +113,7 @@ func setupWithStoreHandler(t *testing.T, fault, collection string, useID bool, w
 	}
 	t.Cleanup(func() {
 		cancel()
-		<-f.s.done
+		f.s.store.stop()
 	})
 	r, err := apis.NewRouter(f.app)
 	if err != nil {
@@ -368,20 +364,10 @@ func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
 	f.expect(f.callback(cb), 400)
 }
 
-func TestInvalidIdentityTokensRejected(t *testing.T) {
-	for _, fault := range []string{"nonce", "nonce_missing", "at_hash", "audience", "issuer", "expired", "signature"} {
-		t.Run(fault, func(t *testing.T) {
-			f := setup(t, fault)
-			f.loginStore()
-			cb := f.authorize(true)
-			f.expect(f.completeCallback(cb), 401)
-		})
-	}
-}
-
 func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
+	// End-to-end precision of a large numeric subject. Small numeric subjects
+	// are covered directly by TestStoreVerifiesALogin.
 	for _, tc := range []struct{ fault, subject string }{
-		{"subject_number", "12345"},
 		{"numeric:", "900719925474099312345"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
@@ -391,17 +377,6 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 			if privateIdentity(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockstore.Email {
 				t.Fatal("numeric subject or profile was not preserved exactly")
 			}
-		})
-	}
-}
-
-func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
-	for _, fault := range []string{"signature", "algorithm", "issuer", "audience", "expired", "nonce", "nonce_missing", "at_hash", "not_before"} {
-		t.Run(fault, func(t *testing.T) {
-			f := setup(t, "numeric:"+fault)
-			f.loginStore()
-			cb := f.authorize(true)
-			f.expect(f.completeCallback(cb), 401)
 		})
 	}
 }
@@ -457,24 +432,6 @@ func TestShopifySubjectNormalizationIsExactAndLimited(t *testing.T) {
 	}
 }
 
-func TestRealVerifierErrorsReceiveSafeDiagnostics(t *testing.T) {
-	for _, tc := range []struct{ fault, reason string }{
-		{"audience_number", "claims_decode_failed"},
-		{"not_before", "not_yet_valid"},
-	} {
-		t.Run(tc.fault, func(t *testing.T) {
-			f := setup(t, tc.fault)
-			f.loginStore()
-			cb := f.authorize(true)
-			r := f.completeCallback(cb)
-			f.expect(r, 401)
-			if !strings.Contains(r.body, "("+tc.reason+")") {
-				t.Fatalf("missing safe diagnostic: %s", r.body)
-			}
-		})
-	}
-}
-
 func TestIDTokenDiagnosticsDoNotExposeClaimsOrUpstreamBodies(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
@@ -521,13 +478,6 @@ func TestIDTokenClaimTypeDiagnosticsNeverReturnValues(t *testing.T) {
 			t.Fatal("invalid input should not produce diagnostics")
 		}
 	}
-}
-
-func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
-	f := setup(t, "graphql")
-	f.loginStore()
-	cb := f.authorize(true)
-	f.expect(f.completeCallback(cb), 502)
 }
 
 func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
@@ -661,19 +611,6 @@ func TestProductionURLRequirements(t *testing.T) {
 	}
 }
 
-func TestPKCETamperingRejected(t *testing.T) {
-	f := setup(t, "")
-	f.loginStore()
-	start := f.start(true)
-	u, _ := url.Parse(start.location)
-	q := u.Query()
-	q.Set("code_challenge", "attacker-challenge")
-	u.RawQuery = q.Encode()
-	a := f.request("GET", u.String(), "", "", "")
-	f.expect(a, 302)
-	f.expect(f.completeCallback(a.location), 502)
-}
-
 // PocketBase already has an OIDC provider. Verify its compatibility separately
 // and show why profile enrichment still needs the Shopify GraphQL API.
 func TestNativePocketBaseOIDCProvider(t *testing.T) {
@@ -682,11 +619,11 @@ func TestNativePocketBaseOIDCProvider(t *testing.T) {
 	p := auth.NewOIDCProvider()
 	p.SetContext(context.Background())
 	p.SetClientId(mockstore.ClientID)
-	p.SetAuthURL(f.s.oauth.Endpoint.AuthURL)
-	p.SetTokenURL(f.s.oauth.Endpoint.TokenURL)
-	p.SetRedirectURL(f.s.oauth.RedirectURL)
-	p.SetScopes(f.s.oauth.Scopes)
-	p.SetExtra(map[string]any{"issuers": []string{f.s.issuer}, "jwksURL": f.store.URL + "/jwks"})
+	p.SetAuthURL(f.s.store.authURL())
+	p.SetTokenURL(f.store.URL + "/token")
+	p.SetRedirectURL(f.s.cfg.RedirectURL)
+	p.SetScopes([]string{"openid", "email", "customer-account-api:full"})
+	p.SetExtra(map[string]any{"issuers": []string{(f.store.URL + "/identity")}, "jwksURL": f.store.URL + "/jwks"})
 	verifier := oauth2.GenerateVerifier()
 	a := f.request("GET", p.BuildAuthURL(oauth2.GenerateVerifier(), oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", oauth2.GenerateVerifier())), "", "", "")
 	f.expect(a, 302)

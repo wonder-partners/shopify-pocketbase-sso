@@ -487,26 +487,33 @@ func TestShopifyResponseIsSerializedOnceBeforeCommit(t *testing.T) {
 }
 
 func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
-	f := setup(t, "")
-	original := f.s.client.Transport
-	tokenRequests := 0
-	f.s.client.Transport = oauthRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		// This pool has one connection. An open auth transaction would hold it
-		// and prevent this query from completing before its deadline.
-		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
-		defer cancel()
-		var result int
-		if err := f.app.NonconcurrentDB().NewQuery("SELECT 1").WithContext(ctx).Row(&result); err != nil {
-			return nil, errors.New("Shopify request ran while the database transaction was open")
-		}
-		if r.URL.Path == "/token" {
-			tokenRequests++
-		}
-		return original.RoundTrip(r)
+	var f *fixture
+	var tokenRequests atomic.Int32
+	f = setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/token" && r.URL.Path != "/customer/api/2026-10/graphql" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// This pool has one connection. An open auth transaction would hold it
+			// and prevent this query from completing before its deadline.
+			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+			defer cancel()
+			var result int
+			if err := f.app.NonconcurrentDB().NewQuery("SELECT 1").WithContext(ctx).Row(&result); err != nil {
+				http.Error(w, "Shopify request ran while the database transaction was open", http.StatusInternalServerError)
+				return
+			}
+			if r.URL.Path == "/token" {
+				tokenRequests.Add(1)
+			}
+			next.ServeHTTP(w, r)
+		})
 	})
+	waitForDiscovery(t, f.s)
 	f.login()
-	if tokenRequests != 1 {
-		t.Fatalf("expected one token exchange, got %d", tokenRequests)
+	if tokenRequests.Load() != 1 {
+		t.Fatalf("expected one token exchange, got %d", tokenRequests.Load())
 	}
 }
 
