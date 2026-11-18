@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -18,51 +17,10 @@ func (s *Service) unlinkShopifyAccount(e *core.RecordRequestEvent) error {
 	if e.Record.GetString("provider") != providerName || e.Record.GetString("collectionRef") != s.collectionID {
 		return e.Next()
 	}
-	originalApp := e.App
-	originalResponse := e.Response
-	captured := &authResponseBuffer{header: originalResponse.Header().Clone()}
-	e.Response = captured
-	waitingForOuter := false
-	defer func() {
-		e.App = originalApp
-		if !waitingForOuter {
-			e.Response = originalResponse
-		}
-	}()
-	rejectedResponse := errors.New("Shopify unlink hook wrote an error response")
-	err := originalApp.RunInTransaction(func(tx core.App) error {
-		e.App = tx
-		if err := e.Next(); err != nil {
-			return err
-		}
-		if e.Status() >= http.StatusBadRequest {
-			return rejectedResponse
-		}
-		return nil
+	// Native deletion writes its 204 from a transaction completion callback.
+	return respondAfterCommit(e.RequestEvent, commitRules{responseWrittenOnComplete: true}, func(core.App) error {
+		return e.Next()
 	})
-	e.App = originalApp
-	if outer := originalApp.TxInfo(); outer != nil {
-		// Native deletion writes its 204 in an OnComplete callback. Keep the
-		// buffer attached until that callback has run, then flush only the
-		// response belonging to the actual commit or policy rollback.
-		outer.OnComplete(func(txErr error) error {
-			e.Response = originalResponse
-			if captured.Written() && ((err == nil && txErr == nil) || (err == rejectedResponse && errors.Is(txErr, rejectedResponse))) {
-				return captured.sendTo(originalResponse)
-			}
-			return nil
-		})
-		waitingForOuter = true
-		return err // Let the owner roll back a written HTTP rejection too.
-	}
-	e.Response = originalResponse
-	if err != nil && err != rejectedResponse {
-		return err
-	}
-	if captured.Written() {
-		return captured.sendTo(originalResponse)
-	}
-	return nil
 }
 
 // Model hooks also cover native verification, OTP and password recovery purges.

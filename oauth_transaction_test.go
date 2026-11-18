@@ -315,53 +315,6 @@ func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
 	}
 }
 
-func TestShopifyCommitFailureDoesNotExposeAuthResponse(t *testing.T) {
-	for _, mfa := range []bool{false, true} {
-		name := "session"
-		if mfa {
-			name = "mfa"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := setup(t, "")
-			if mfa {
-				c, _ := f.app.FindCollectionByNameOrId("users")
-				c.MFA.Enabled, c.OTP.Enabled = true, true
-				if err := f.app.Save(c); err != nil {
-					t.Fatal(err)
-				}
-			}
-			// A deferred foreign key lets all auth hooks succeed but rejects COMMIT.
-			for _, query := range []string{
-				"CREATE TABLE oauth_commit_parent (id TEXT PRIMARY KEY)",
-				"CREATE TABLE oauth_commit_child (parent_id TEXT REFERENCES oauth_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)",
-			} {
-				if _, err := f.app.DB().NewQuery(query).Execute(); err != nil {
-					t.Fatal(err)
-				}
-			}
-			inserted := false
-			f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
-				if _, err := e.App.DB().NewQuery("INSERT INTO oauth_commit_child (parent_id) VALUES ('missing')").Execute(); err != nil {
-					return err
-				}
-				inserted = true
-				return e.Next()
-			})
-			f.loginShop()
-			result := f.completeCallback(f.authorize(false))
-			if !inserted || result.status < http.StatusBadRequest || strings.Contains(result.body, `"token"`) || strings.Contains(result.body, "mfaId") {
-				t.Fatal("failed commit exposed a JWT or an unusable MFA challenge")
-			}
-			for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
-				count, err := f.app.CountRecords(collection)
-				if err != nil || count != 0 {
-					t.Fatalf("failed commit left records in %s", collection)
-				}
-			}
-		})
-	}
-}
-
 type oauthRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f oauthRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

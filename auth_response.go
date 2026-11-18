@@ -1,9 +1,7 @@
 package shopifysso
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
@@ -152,98 +150,19 @@ func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 
 // Commit the profile and native identity links only when the entire OAuth chain
 // accepts the request. A native MFA challenge accepts the Shopify factor and
-// must persist so that the second factor can use it. Buffer responses until the
-// transaction finishes, including errors written by hooks without returning one.
-func (s *Service) transactionalAuthResponse(e *core.RequestEvent, action func() error) error {
-	original := e.Response
-	originalApp := e.App
-	captured := &authResponseBuffer{header: original.Header().Clone()}
-	e.Response = captured
-	defer func() {
-		e.Response, e.App = original, originalApp
-	}()
-	var actionErr error
-	rejectedResponse := errors.New("OAuth hook wrote an error response")
-	err := originalApp.RunInTransaction(func(tx core.App) error {
+// must persist so that the second factor can use it.
+func (s *Service) respondToOAuth(e *core.RequestEvent) error {
+	return respondAfterCommit(e, commitRules{acceptMFAChallenge: true}, func(tx core.App) error {
 		authTx := &shopifyAuthTransaction{App: tx, original: s.app}
 		e.App = authTx
-		actionErr = action()
-		if !captured.Written() && authTx.preparedResponse != nil {
-			if err := authTx.preparedResponse.sendTo(captured); err != nil {
-				return err
+		err := e.Next()
+		// Send the native response prepared before commit, unless a project hook
+		// has already written its own final response.
+		if !e.Written() && authTx.preparedResponse != nil {
+			if writeErr := authTx.preparedResponse.sendTo(e.Response); writeErr != nil {
+				return writeErr
 			}
 		}
-		// Exact equality prevents a joined MFA + policy error from committing.
-		if actionErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
-			return nil
-		}
-		if actionErr != nil {
-			return actionErr
-		}
-		// A hook can stop the chain with nil without producing a response.
-		// Reject it before commit so the resulting HTTP 500 leaves no changes.
-		if !captured.Written() {
-			return e.InternalServerError("PocketBase auth response was not completed.", nil)
-		}
-		if captured.status >= http.StatusBadRequest {
-			return rejectedResponse
-		}
-		return nil
+		return err
 	})
-	e.Response = original
-	e.App = originalApp
-	if err != nil && err != rejectedResponse {
-		return err
-	}
-	if !captured.Written() {
-		return e.InternalServerError("PocketBase auth response was not completed.", nil)
-	}
-	if outer := originalApp.TxInfo(); outer != nil {
-		// A nested RunInTransaction has not committed yet. A written policy
-		// rejection must also propagate so the owner rolls back the outer tx.
-		outer.OnComplete(func(txErr error) error {
-			if (err == nil && txErr == nil) || (err == rejectedResponse && errors.Is(txErr, rejectedResponse)) {
-				return captured.sendTo(original)
-			}
-			return nil
-		})
-		// ErrMFA accepts the first factor. Returning it here would roll back
-		// the outer transaction and invalidate its pending challenge.
-		return err
-	}
-	writeErr := captured.sendTo(original)
-	if actionErr != nil {
-		return actionErr
-	}
-	return writeErr
-}
-
-type authResponseBuffer struct {
-	bytes.Buffer
-	header http.Header
-	status int
-}
-
-func (b *authResponseBuffer) sendTo(w http.ResponseWriter) error {
-	for key, values := range b.header {
-		w.Header()[key] = values
-	}
-	w.WriteHeader(b.status)
-	_, err := w.Write(b.Bytes())
-	return err
-}
-
-func (b *authResponseBuffer) Header() http.Header { return b.header }
-func (b *authResponseBuffer) Written() bool       { return b.status != 0 }
-func (b *authResponseBuffer) Status() int         { return b.status }
-func (b *authResponseBuffer) WriteHeader(status int) {
-	if !b.Written() {
-		b.status = status
-	}
-}
-func (b *authResponseBuffer) Write(data []byte) (int, error) {
-	if !b.Written() {
-		b.WriteHeader(http.StatusOK)
-	}
-	return b.Buffer.Write(data)
 }

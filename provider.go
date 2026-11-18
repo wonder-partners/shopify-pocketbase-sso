@@ -208,5 +208,5 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	}
 	flow.prepared = prepared
 	e.Request = e.Request.WithContext(context.WithValue(ctx, providerContextKey{}, flow))
-	return s.transactionalAuthResponse(e, e.Next)
+	return s.respondToOAuth(e)
 }
