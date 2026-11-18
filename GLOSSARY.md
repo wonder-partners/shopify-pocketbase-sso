@@ -18,6 +18,12 @@ _Avoid_: Shopify account, private account
 PocketBase's own record of an external sign-in for an account; for Shopify it always pairs with a Shopify identity.
 _Avoid_: external auth, native link
 
+### Login
+
+**Shopify login**:
+One attempt by a customer verified by Shopify to enter the application; it resumes the account tied to their Shopify identity, or creates a new account.
+_Avoid_: sign-in, OAuth login
+
 ### Responses
 
 **Committed response**:

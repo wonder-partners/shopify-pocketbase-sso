@@ -1,15 +1,10 @@
 package shopifysso
 
 import (
-	"database/sql"
 	"errors"
-	"net/http"
-	"strings"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
-	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
@@ -73,9 +68,9 @@ func (s *Service) configureProvider() error {
 	})
 	s.app.OnRecordAuthRequest(c.Id).Bind(&hook.Handler[*core.RecordAuthRequestEvent]{
 		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
-			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
-			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
-				if err := saveIdentity(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID, p.previousIdentity); err != nil {
+			login, ok := e.Get(shopifyLoginKey).(*shopifyLogin)
+			if ok && login.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
+				if err := login.finish(e.App, e.Record.Id); err != nil {
 					return e.InternalServerError("Unable to save the private Shopify identity.", nil)
 				}
 			}
@@ -100,78 +95,21 @@ func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) e
 	if !ok || p.service != s || p.profile == nil {
 		return e.ForbiddenError("Missing verified Shopify identity.", nil)
 	}
-	// Native OAuth can find a record by verified email or current auth header.
-	// Neither is sufficient for our policy: require an existing Shopify identity.
-	identity, err := findIdentity(e.App, s.issuer, p.subject)
+	// Native OAuth proposes e.Record by verified email or current auth header.
+	// The Shopify login only accepts it when it is the customer's own account.
+	login, err := startShopifyLogin(e.App, s.collectionID, verifiedCustomer{
+		issuer: s.issuer, subject: p.subject, customerID: p.profile.ID,
+		email: p.profile.EmailAddress.Email, emailVerified: e.OAuth2User.Email != "",
+	}, e.Record)
 	if err != nil {
 		return err
 	}
-	var r *core.Record
-	if identity != nil {
-		r, err = e.App.FindRecordById(s.collectionID, identity.account())
-		if err != nil {
-			return err
-		}
-	}
-	// A previous native login may have committed its external link before an
-	// interruption prevented saving our private row. Recover only from that
-	// exact native identity link, never from an email/header fallback candidate.
-	link, err := e.App.FindFirstExternalAuthByExpr(dbx.HashExp{
-		"collectionRef": e.Collection.Id, "provider": providerName,
-		"providerId": oauthLinkProviderID(s.issuer, p.subject),
-	})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if link != nil {
-		if r != nil && r.Id != link.RecordRef() {
-			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
-		}
-		r, err = e.App.FindRecordById(s.collectionID, link.RecordRef())
-		if err != nil {
-			return err
-		}
-	}
-	if e.Record != nil && (r == nil || e.Record.Id != r.Id) {
-		return router.NewApiError(http.StatusConflict, "Shopify cannot automatically link an existing account.", nil)
-	}
-	if r != nil {
-		e.Record, e.IsNewRecord = r, false
-	}
-	emailOwner, err := e.App.FindAuthRecordByEmail(s.collectionID, p.profile.EmailAddress.Email)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if emailOwner != nil && (r == nil || emailOwner.Id != r.Id) {
-		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
-	}
-	e.Set(trustedProfileKey, p)
-	p.previousIdentity = identity
-	if r == nil {
-		if e.CreateData == nil {
-			e.CreateData = map[string]any{}
-		}
-		e.CreateData["email"] = p.profile.EmailAddress.Email
-		delete(e.CreateData, "verified")
-		delete(e.CreateData, "password")
-		delete(e.CreateData, "passwordConfirm")
+	login.service = s
+	e.Set(shopifyLoginKey, login)
+	if account := login.account(); account != nil {
+		e.Record, e.IsNewRecord = account, false
 	} else {
-		upgradeVerified := !r.Verified() && e.OAuth2User.Email != ""
-		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
-		r.SetEmail(p.profile.EmailAddress.Email)
-		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
-		if err := e.App.Save(r); err != nil {
-			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)
-		}
-		// Verification revokes all old OAuth links. Native OAuth still holds
-		// the deleted Shopify link and won't recreate it, so restore only this
-		// exact identity within the auth transaction. Keep other links revoked.
-		if upgradeVerified && link != nil {
-			link.MarkAsNew()
-			if err := e.App.Save(link); err != nil {
-				return router.NewApiError(http.StatusConflict, "Unable to restore the Shopify identity link.", nil)
-			}
-		}
+		e.CreateData = login.newAccountData(e.CreateData)
 	}
 	return e.Next()
 }

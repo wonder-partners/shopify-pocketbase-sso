@@ -18,7 +18,9 @@ import (
 )
 
 const providerName = "shopify"
-const trustedProfileKey = "studio_shopify_verified_profile"
+
+// The event store key carrying a started Shopify login to its second step.
+const shopifyLoginKey = "studio_shopify_verified_profile"
 
 type providerContextKey struct{}
 type providerContext struct {
@@ -44,12 +46,11 @@ func init() {
 
 type shopifyProvider struct {
 	auth.BaseProvider
-	service          *Service
-	subject          string
-	profile          *customer
-	claims           claims
-	token            *oauth2.Token
-	previousIdentity *shopifyIdentity
+	service *Service
+	subject string
+	profile *customer
+	claims  claims
+	token   *oauth2.Token
 }
 
 var _ auth.Provider = (*shopifyProvider)(nil)

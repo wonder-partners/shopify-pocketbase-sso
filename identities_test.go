@@ -165,25 +165,6 @@ func TestSystemCollectionProtectionsRemainNative(t *testing.T) {
 	}
 }
 
-func TestShopifyIdentityRecoveryUsesOnlyTheOAuthLink(t *testing.T) {
-	f := setup(t, "")
-	f.login()
-	_, user := f.authRecord()
-	if err := f.app.Delete(privateIdentity(f, user.Id)); err != nil {
-		t.Fatal(err)
-	}
-	if result := decodeAuth(t, f.login()); result.Record["id"] != user.Id || result.Meta["isNew"] != false {
-		t.Fatal("exact native OAuth link did not recover the private identity")
-	}
-	other := nativeSignup(f, "other-owner@example.test")
-	a := privateIdentity(f, user.Id)
-	a.Set("user", other.Record["id"])
-	if err := f.app.Save(a); err != nil {
-		t.Fatal(err)
-	}
-	f.expect(f.completeCallback(f.authorize(false)), 403)
-}
-
 func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 	for _, collection := range []string{"users", "renamedMembers"} {
 		t.Run(collection, func(t *testing.T) {

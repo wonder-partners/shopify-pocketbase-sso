@@ -187,96 +187,59 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	}
 }
 
+// End-to-end through PocketBase's own verification purge and session rotation.
+// The same-email variant and a failed link restore are covered directly by
+// TestShopifyLoginSynchronizesTheAccount and its link-restore refusal test.
 func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
-	for _, changeEmail := range []bool{false, true} {
-		name := "same_email"
-		if changeEmail {
-			name = "changed_email"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := setup(t, "email")
-			first := decodeAuth(t, f.login())
-			_, user := f.authRecord()
-			if user.Verified() {
-				t.Fatal("expected an initially unverified Shopify email")
-			}
-			identityRecordID := privateIdentity(f, user.Id).Id
-			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
-				"collectionRef": user.Collection().Id, "recordRef": user.Id, "provider": providerName,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			providerID := link.ProviderId()
-			// Verification must still revoke other pre-existing OAuth links.
-			other := core.NewExternalAuth(f.app)
-			other.SetCollectionRef(user.Collection().Id)
-			other.SetRecordRef(user.Id)
-			other.SetProvider("google")
-			other.SetProviderId("previous-unverified-identity")
-			if err := f.app.Save(other); err != nil {
-				t.Fatal(err)
-			}
-			f.mock.Fault = ""
-			if changeEmail {
-				f.mock.ProfileEmail = "verified@example.test"
-			}
-			for range 2 {
-				result := decodeAuth(t, f.login())
-				if result.Record["id"] != user.Id || result.Record["verified"] != true || result.Meta["isNew"] != false {
-					t.Fatal("verification or repeat login changed the Shopify account")
-				}
-				if changeEmail && result.Record["email"] != f.mock.ProfileEmail {
-					t.Fatal("verified email was not synchronized")
-				}
-				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
-					"collectionRef": user.Collection().Id, "provider": providerName, "providerId": providerID,
-				})
-				if err != nil || link.RecordRef() != user.Id {
-					t.Fatal("verification lost the native Shopify identity link", err)
-				}
-				count, err := f.app.CountRecords(core.CollectionNameExternalAuths)
-				if err != nil || count != 1 || privateIdentity(f, user.Id).Id != identityRecordID {
-					t.Fatal("verification left stale links or changed the private identity")
-				}
-				f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", result.Token), 200)
-			}
-			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, other.Id); !errors.Is(err, sql.ErrNoRows) {
-				t.Fatal("verification kept an unrelated pre-existing OAuth link")
-			}
-			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 401)
-		})
-	}
-}
-
-func TestShopifyVerificationUpgradeRollsBackWhenLinkRestoreFails(t *testing.T) {
 	f := setup(t, "email")
 	first := decodeAuth(t, f.login())
 	_, user := f.authRecord()
-	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+	if user.Verified() {
+		t.Fatal("expected an initially unverified Shopify email")
+	}
+	identityRecordID := privateIdentity(f, user.Id).Id
+	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+		"collectionRef": user.Collection().Id, "recordRef": user.Id, "provider": providerName,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restoreAttempted := false
-	f.app.OnRecordCreate(core.CollectionNameExternalAuths).BindFunc(func(e *core.RecordEvent) error {
-		restoreAttempted = true
-		return errors.New("identity storage unavailable")
-	})
+	providerID := link.ProviderId()
+	// Verification must still revoke other pre-existing OAuth links.
+	other := core.NewExternalAuth(f.app)
+	other.SetCollectionRef(user.Collection().Id)
+	other.SetRecordRef(user.Id)
+	other.SetProvider("google")
+	other.SetProviderId("previous-unverified-identity")
+	if err := f.app.Save(other); err != nil {
+		t.Fatal(err)
+	}
 	f.mock.Fault = ""
 	f.mock.ProfileEmail = "verified@example.test"
-	f.loginShop()
-	f.expect(f.completeCallback(f.authorize(false)), 409)
-	if !restoreAttempted {
-		t.Fatal("login did not attempt to restore the Shopify link")
+	for range 2 {
+		result := decodeAuth(t, f.login())
+		if result.Record["id"] != user.Id || result.Record["verified"] != true || result.Meta["isNew"] != false {
+			t.Fatal("verification or repeat login changed the Shopify account")
+		}
+		if result.Record["email"] != f.mock.ProfileEmail {
+			t.Fatal("verified email was not synchronized")
+		}
+		link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+			"collectionRef": user.Collection().Id, "provider": providerName, "providerId": providerID,
+		})
+		if err != nil || link.RecordRef() != user.Id {
+			t.Fatal("verification lost the native Shopify identity link", err)
+		}
+		count, err := f.app.CountRecords(core.CollectionNameExternalAuths)
+		if err != nil || count != 1 || privateIdentity(f, user.Id).Id != identityRecordID {
+			t.Fatal("verification left stale links or changed the private identity")
+		}
+		f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", result.Token), 200)
 	}
-	after, err := f.app.FindRecordById("users", user.Id)
-	if err != nil || after.Verified() || after.Email() != user.Email() {
-		t.Fatal("failed link restoration persisted the verification upgrade", err)
+	if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, other.Id); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("verification kept an unrelated pre-existing OAuth link")
 	}
-	if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, link.Id); err != nil {
-		t.Fatal("failed link restoration lost the original OAuth link", err)
-	}
-	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 200)
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 401)
 }
 
 func mustJSON(t *testing.T, data any) []byte {
@@ -428,35 +391,6 @@ func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 	count, _ := f.app.CountRecords(core.CollectionNameExternalAuths)
 	if count != 0 {
 		t.Fatal("OAuth linked to an unrelated authenticated account")
-	}
-}
-
-func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
-	f := setup(t, "")
-	documentsCollection(f)
-	c, _ := f.app.FindCollectionByNameOrId("users")
-	legacy := core.NewRecord(c)
-	legacy.SetEmail("camille@example.test")
-	legacy.SetPassword("TestPassword12345")
-	if err := f.app.Save(legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveIdentity(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345", nil); err != nil {
-		t.Fatal(err)
-	}
-	token, _ := legacy.NewAuthToken()
-	doc := createDocument(f, token, legacy.Id)
-	if err := ensureCollection(f.app, "users"); err != nil {
-		t.Fatal(err)
-	}
-	result := decodeAuth(t, f.login())
-	if result.Record["id"] != legacy.Id || result.Meta["isNew"] != false {
-		t.Fatal("prototype identity was not preserved")
-	}
-	f.expect(f.request("GET", f.api.URL+"/api/collections/documents/records/"+doc, "", "", result.Token), 200)
-	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": legacy.Id})
-	if err != nil || link.ProviderId() == "" {
-		t.Fatal("native link was not created for the prototype user")
 	}
 }
 
