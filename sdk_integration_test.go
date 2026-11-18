@@ -14,7 +14,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 		t.Skip("run mise run test to include the official JS SDK OAuth integration")
 	}
 	f := setup(t, "numeric:")
-	input := map[string]string{"url": f.api.URL, "shopURL": f.shop.URL, "redirectURL": f.s.cfg.RedirectURL}
+	input := map[string]string{"url": f.api.URL, "storeURL": f.store.URL, "redirectURL": f.s.cfg.RedirectURL}
 	data, _ := json.Marshal(input)
 	script, _ := filepath.Abs("tests/sdk/oauth.test.mjs")
 	cmd := exec.Command("node", script)

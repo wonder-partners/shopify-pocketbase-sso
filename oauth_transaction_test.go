@@ -76,7 +76,7 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 				}
 			}
 
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			status := http.StatusForbidden
 			if stage == "enrich" {
@@ -138,7 +138,7 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 					return errors.New("identity storage unavailable")
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			status := http.StatusForbidden
 			if stage == "identity_storage" || stage == "oauth_stop" || stage == "auth_stop" {
 				status = http.StatusInternalServerError
@@ -163,7 +163,7 @@ func TestShopifyAuthHookCanWriteItsOwnResponse(t *testing.T) {
 	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
 		return e.NoContent(http.StatusNoContent)
 	})
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(false)), http.StatusNoContent)
 	after, err := f.app.FindRecordById("users", user.Id)
 	if err != nil || after.Email() != f.mock.ProfileEmail || !after.Verified() {
@@ -190,7 +190,7 @@ func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
 	}
 	f.mock.Fault = ""
 	f.mock.ProfileEmail = "changed@example.test"
-	f.loginShop()
+	f.loginStore()
 	result := f.completeCallback(f.authorize(false))
 	f.expect(result, http.StatusUnauthorized)
 	var challenge struct {
@@ -231,7 +231,7 @@ func TestShopifyDenialAfterMFAIsRolledBack(t *testing.T) {
 		}
 		return errors.Join(apis.ErrMFA, e.ForbiddenError("Project denied the Shopify factor.", nil))
 	})
-	f.loginShop()
+	f.loginStore()
 	result := f.completeCallback(f.authorize(false))
 	f.expect(result, http.StatusForbidden)
 	if strings.Contains(result.body, "mfaId") {
@@ -282,7 +282,7 @@ func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
 				if strings.HasSuffix(stage, "_outer") {
 					serverURL = projectTransactionServer(t, f, "success")
 				}
-				f.loginShop()
+				f.loginStore()
 				callback := f.authorize(false)
 				var result response
 				if serverURL == "" {
@@ -359,7 +359,7 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 					return wrap(e.RequestEvent, e.Next)
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			after, err := f.app.FindRecordById("users", before.Id)
 			if err != nil || privateIdentity(f, before.Id).Id != identityRecordID {
@@ -431,7 +431,7 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 					return e.Next()
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			f.expect(result, http.StatusBadRequest)
 			if sent.Load() != 0 {

@@ -20,7 +20,7 @@ import (
 func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 	var healthy atomic.Bool
 	attempted := make(chan struct{}, 10)
-	f := setupWithShopHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/.well-known/") {
 				select {
@@ -97,7 +97,7 @@ func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 func TestDiscoveryDoesNotPublishPartialResults(t *testing.T) {
 	var healthy atomic.Bool
 	apiRequested := make(chan struct{}, 1)
-	f := setupWithShopHandler(t, "", "members", true, func(next http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "members", true, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/.well-known/customer-account-api" && !healthy.Load() {
 				select {
@@ -134,7 +134,7 @@ func TestDiscoveryDoesNotPublishPartialResults(t *testing.T) {
 
 func TestTerminationCancelsInFlightDiscovery(t *testing.T) {
 	started, canceled := make(chan struct{}), make(chan struct{})
-	f := setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			close(started)
 			<-r.Context().Done()
@@ -170,7 +170,7 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 	for _, action := range []string{"ready", "terminate"} {
 		t.Run(action, func(t *testing.T) {
 			apiStarted, allowAPI := make(chan struct{}), make(chan struct{})
-			f := setupWithShopHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+			f := setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/.well-known/customer-account-api" {
 						close(apiStarted)
@@ -309,7 +309,7 @@ func TestLocalSetupErrorsFailWithoutDiscovery(t *testing.T) {
 	t.Cleanup(func() { _ = app.ResetBootstrapState() })
 	for _, collection := range []string{"missing", "_superusers"} {
 		_, err := New(context.Background(), app, Config{
-			ShopURL: "http://127.0.0.1:1", RedirectURL: "https://frontend.example/callback",
+			StoreURL: "http://127.0.0.1:1", RedirectURL: "https://frontend.example/callback",
 			ClientID: "public-client", AuthCollection: collection, AllowLoopbackHTTP: true,
 		})
 		if err == nil || strings.Contains(err.Error(), "discovery") {

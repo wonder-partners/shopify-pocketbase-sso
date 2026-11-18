@@ -54,7 +54,7 @@ func TestConfiguredAuthCollection(t *testing.T) {
 			if err != nil || users.OAuth2.Enabled || len(users.OAuth2.Providers) != 0 {
 				t.Fatal("setup modified the default users collection")
 			}
-			f.loginShop()
+			f.loginStore()
 			page := f.callback(f.authorize(false))
 			data := callbackData(t, page.body)
 			body := nativeOAuthBody(t, data)
@@ -85,7 +85,7 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 				if err := f.app.Save(native); err != nil {
 					t.Fatal(err)
 				}
-				f.loginShop()
+				f.loginStore()
 				f.expect(f.completeCallback(f.authorize(false)), 409)
 				for _, collection := range []string{core.CollectionNameExternalAuths, identitiesCollectionName} {
 					count, err := f.app.CountRecords(collection)
@@ -123,7 +123,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)
@@ -274,7 +274,7 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 					return e.ForbiddenError("Signup rejected by the project.", nil)
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			r := f.completeCallback(f.authorize(false))
 			f.expect(r, 403)
 			if strings.Contains(r.body, `"token"`) {
@@ -292,7 +292,7 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 
 func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(false)
 	endpoint := f.api.URL + "/api/collections/users/auth-with-oauth2"
 	page := f.callback(cb)
@@ -317,7 +317,7 @@ func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 	for _, fault := range []string{"code_expired", "missing", "short", "long", "characters", "wrong"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "")
-			f.loginShop()
+			f.loginStore()
 			page := f.callback(f.authorize(false))
 			f.expect(page, 200)
 			data := callbackData(t, page.body)
@@ -364,7 +364,7 @@ func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
 
 func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	start := f.start(false)
 	u, _ := url.Parse(start.location)
 	q := u.Query()
@@ -384,7 +384,7 @@ func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 	f := setup(t, "")
 	native := nativeSignup(f, "unrelated@example.test")
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	data := callbackData(t, page.body)
 	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), native.Token), 409)
@@ -436,7 +436,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 
 func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T) {
 	f := setup(t, "email") // The verified claim does not match the profile email.
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)

@@ -41,7 +41,7 @@ func TestShopifyAuthAlertDoesNotBlockDatabaseWritesOrLogin(t *testing.T) {
 		<-release
 		return nil
 	})
-	f.loginShop()
+	f.loginStore()
 	callback := f.authorize(false)
 	loginDone := make(chan response, 1)
 	go func() { loginDone <- f.completeCallback(callback) }()
@@ -123,7 +123,7 @@ func TestRejectedShopifyAuthDoesNotSendAlert(t *testing.T) {
 		}
 		return e.JSON(http.StatusForbidden, map[string]string{"message": "Project policy denied login."})
 	})
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(false)), http.StatusForbidden)
 	if sent.Load() != 0 {
 		t.Fatal("rejected login sent a new-device alert")

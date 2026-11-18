@@ -89,10 +89,10 @@ async function completeShopifyLogin() {
   );
 }
 
-let shopCookie = '';
+let storeCookie = '';
 async function authorize() {
   const response = await originalFetch(location.destination, {
-    redirect: 'manual', headers: shopCookie ? {Cookie: shopCookie} : {},
+    redirect: 'manual', headers: storeCookie ? {Cookie: storeCookie} : {},
   });
   assert.equal(response.status, 302);
   const callback = new URL(response.headers.get('location'));
@@ -123,9 +123,9 @@ await loginWithShopify(false);
 assert.equal(new URL(location.destination).searchParams.has('prompt'), false);
 const form = await originalFetch(location.destination, {redirect: 'manual'});
 assert.equal(form.status, 200);
-const login = await originalFetch(input.shopURL + '/login', {method: 'POST', redirect: 'manual'});
+const login = await originalFetch(input.storeURL + '/login', {method: 'POST', redirect: 'manual'});
 assert.equal(login.status, 303);
-shopCookie = login.headers.getSetCookie()[0].split(';')[0];
+storeCookie = login.headers.getSetCookie()[0].split(';')[0];
 
 // State/expiry/storage errors are rejected in the frontend, before any exchange.
 for (const fault of ['state', 'expired', 'missing', 'malformed', 'missing_code']) {

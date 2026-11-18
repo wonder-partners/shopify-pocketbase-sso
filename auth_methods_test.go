@@ -21,7 +21,7 @@ func TestShopifyAuthMethodsApplyFieldsAfterEndpointRewrite(t *testing.T) {
 				if state == "ready" {
 					f = setup(t, "")
 				} else {
-					f = setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+					f = setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, "discovery unavailable", http.StatusServiceUnavailable)
 						})
@@ -93,7 +93,7 @@ func TestShopifyAuthMethodsRewriteBeforeNativeGzip(t *testing.T) {
 			t.Run(order+"/"+mode, func(t *testing.T) {
 				var f *fixture
 				if mode == "pending" {
-					f = setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+					f = setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, "discovery unavailable", http.StatusServiceUnavailable)
 						})

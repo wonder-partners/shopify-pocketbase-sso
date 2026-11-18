@@ -14,7 +14,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Service connects one Shopify shop to one PocketBase auth collection.
+// Service connects one Shopify store to one PocketBase auth collection.
 type Service struct {
 	app          core.App
 	cfg          Config
@@ -39,7 +39,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if cfg.AuthCollection == "" {
 		cfg.AuthCollection = "users"
 	}
-	if err := checkURL(cfg.ShopURL, cfg.AllowLoopbackHTTP, true); err != nil {
+	if err := checkURL(cfg.StoreURL, cfg.AllowLoopbackHTTP, true); err != nil {
 		return nil, err
 	}
 	if err := checkURL(cfg.RedirectURL, cfg.AllowLoopbackHTTP, false); err != nil {
@@ -54,7 +54,7 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	callback, _ := url.Parse(cfg.RedirectURL)
 	origin := callback.Scheme + "://" + callback.Host
 	s := &Service{app: app, cfg: cfg, origin: origin, client: &http.Client{
-		Timeout: 10 * time.Second, Transport: shopTransport{origin: origin},
+		Timeout: 10 * time.Second, Transport: storeTransport{origin: origin},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 	if err := ensureCollection(app, cfg.AuthCollection); err != nil {

@@ -108,7 +108,7 @@ func TestShopifyAuthWaitsForOuterTransaction(t *testing.T) {
 			f.mock.Fault = ""
 			f.mock.ProfileEmail = "changed@example.test"
 			serverURL := projectTransactionServer(t, f, "success")
-			f.loginShop()
+			f.loginStore()
 			data := callbackData(t, f.callback(f.authorize(false)).body)
 			result := f.request("POST", serverURL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), "")
 			if mode == "login" {

@@ -20,19 +20,19 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/auth"
 	"github.com/pocketbase/pocketbase/tools/types"
-	"github.com/wonder-partners/shopify-pocketbase-sso/internal/mockshop"
+	"github.com/wonder-partners/shopify-pocketbase-sso/internal/mockstore"
 	"golang.org/x/oauth2"
 )
 
 type fixture struct {
-	t         *testing.T
-	api, shop *httptest.Server
-	app       *pocketbase.PocketBase
-	s         *Service
-	client    *http.Client
-	mock      *mockshop.Mock
-	auth      authResult
-	flows     map[string]browserFlow // Simulated sessionStorage, not server state.
+	t          *testing.T
+	api, store *httptest.Server
+	app        *pocketbase.PocketBase
+	s          *Service
+	client     *http.Client
+	mock       *mockstore.Mock
+	auth       authResult
+	flows      map[string]browserFlow // Simulated sessionStorage, not server state.
 }
 
 const collectionName = "users"
@@ -51,7 +51,7 @@ func setup(t *testing.T, fault string) *fixture {
 }
 
 func setupCollection(t *testing.T, fault, collection string, useID bool) *fixture {
-	f := setupWithShopHandler(t, fault, collection, useID, nil)
+	f := setupWithStoreHandler(t, fault, collection, useID, nil)
 	waitForDiscovery(t, f.s)
 	return f
 }
@@ -65,22 +65,22 @@ func waitForDiscovery(t *testing.T, s *Service) {
 	}
 }
 
-func setupWithShopHandler(t *testing.T, fault, collection string, useID bool, wrap func(http.Handler) http.Handler) *fixture {
+func setupWithStoreHandler(t *testing.T, fault, collection string, useID bool, wrap func(http.Handler) http.Handler) *fixture {
 	t.Helper()
-	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), shop: httptest.NewUnstartedServer(nil)}
+	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), store: httptest.NewUnstartedServer(nil)}
 	studioURL := "http://" + f.api.Listener.Addr().String()
-	shopURL := "http://" + f.shop.Listener.Addr().String()
-	m, err := mockshop.New(shopURL, studioURL+"/oauth/callback", fault)
+	storeURL := "http://" + f.store.Listener.Addr().String()
+	m, err := mockstore.New(storeURL, studioURL+"/oauth/callback", fault)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.shop.Config.Handler = m
+	f.store.Config.Handler = m
 	if wrap != nil {
-		f.shop.Config.Handler = wrap(m)
+		f.store.Config.Handler = wrap(m)
 	}
 	f.mock = m
-	f.shop.Start()
-	t.Cleanup(f.shop.Close)
+	f.store.Start()
+	t.Cleanup(f.store.Close)
 	f.app = pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir()})
 	if err := f.app.Bootstrap(); err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func setupWithShopHandler(t *testing.T, fault, collection string, useID bool, wr
 	if err := f.app.Save(users); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{ShopURL: shopURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockshop.ClientID, AllowLoopbackHTTP: true}
+	cfg := Config{StoreURL: storeURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockstore.ClientID, AllowLoopbackHTTP: true}
 	if useID {
 		cfg.AuthCollection = users.Id
 	} else if collection != "users" {
@@ -183,9 +183,9 @@ func (f *fixture) expect(r response, status int) {
 	}
 }
 
-func (f *fixture) loginShop() {
+func (f *fixture) loginStore() {
 	f.t.Helper()
-	f.expect(f.request("POST", f.shop.URL+"/login", "", "", ""), 303)
+	f.expect(f.request("POST", f.store.URL+"/login", "", "", ""), 303)
 }
 
 func (f *fixture) start(silent bool) response {
@@ -235,7 +235,7 @@ func (f *fixture) authorize(silent bool) string {
 
 func (f *fixture) login() response {
 	f.t.Helper()
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(false)
 	r := f.completeCallback(cb)
 	f.expect(r, 200)
@@ -305,14 +305,14 @@ func (f *fixture) authRecord() (string, *core.Record) {
 	return f.auth.Token, record
 }
 
-func TestExistingShopSessionCreatesPocketBaseSession(t *testing.T) {
+func TestExistingStoreSessionCreatesPocketBaseSession(t *testing.T) {
 	f := setup(t, "")
 	callback := f.login()
 	if decodeAuth(t, callback).Token == "" {
 		t.Fatal("missing native OAuth response")
 	}
 	token, record := f.authRecord()
-	if record.Email() != mockshop.Email || !record.Verified() {
+	if record.Email() != mockstore.Email || !record.Verified() {
 		t.Fatalf("wrong profile: %v", record.PublicExport())
 	}
 	if strings.Contains(callback.location, token) {
@@ -341,7 +341,7 @@ func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 	}
 	f.expect(f.request("GET", interactive.location, "", "", ""), 200)
 	// Simulate completing the provider's login form in the same browser.
-	f.request("POST", f.shop.URL+"/login", "", "", "")
+	f.request("POST", f.store.URL+"/login", "", "", "")
 	auth := f.request("GET", interactive.location, "", "", "")
 	f.expect(auth, 302)
 	f.expect(f.completeCallback(auth.location), 200)
@@ -351,7 +351,7 @@ func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
 	f := setup(t, "")
 	f.expect(f.callback(f.api.URL+"/oauth/callback?state=forged&code=fake"), 400)
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(true)
 	u, _ := url.Parse(cb)
 	q := u.Query()
@@ -372,7 +372,7 @@ func TestInvalidIdentityTokensRejected(t *testing.T) {
 	for _, fault := range []string{"nonce", "nonce_missing", "at_hash", "audience", "issuer", "expired", "signature"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, fault)
-			f.loginShop()
+			f.loginStore()
 			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
 		})
@@ -388,7 +388,7 @@ func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
 			f := setup(t, tc.fault)
 			f.login()
 			_, record := f.authRecord()
-			if privateIdentity(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockshop.Email {
+			if privateIdentity(f, record.Id).GetString("subject") != tc.subject || record.Email() != mockstore.Email {
 				t.Fatal("numeric subject or profile was not preserved exactly")
 			}
 		})
@@ -399,7 +399,7 @@ func TestNumericSubjectsDoNotBypassTokenChecks(t *testing.T) {
 	for _, fault := range []string{"signature", "algorithm", "issuer", "audience", "expired", "nonce", "nonce_missing", "at_hash", "not_before"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "numeric:"+fault)
-			f.loginShop()
+			f.loginStore()
 			cb := f.authorize(true)
 			f.expect(f.completeCallback(cb), 401)
 		})
@@ -464,7 +464,7 @@ func TestRealVerifierErrorsReceiveSafeDiagnostics(t *testing.T) {
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
 			f := setup(t, tc.fault)
-			f.loginShop()
+			f.loginStore()
 			cb := f.authorize(true)
 			r := f.completeCallback(cb)
 			f.expect(r, 401)
@@ -525,7 +525,7 @@ func TestIDTokenClaimTypeDiagnosticsNeverReturnValues(t *testing.T) {
 
 func TestGraphQLErrorsDoNotCreateSession(t *testing.T) {
 	f := setup(t, "graphql")
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(true)
 	f.expect(f.completeCallback(cb), 502)
 }
@@ -611,7 +611,7 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 
 func TestOriginsAreCheckedBeforeCompletingTheFlow(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(false)
 	page := f.callback(cb)
 	body := nativeOAuthBody(t, callbackData(t, page.body))
@@ -638,7 +638,7 @@ func TestDemoRoutesAndSessionBridgeAreNotRegistered(t *testing.T) {
 
 func TestFrontendExpiresLoginParameters(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(true)
 	for k, p := range f.flows {
 		p.Expires = time.Now().Add(-time.Minute)
@@ -648,7 +648,7 @@ func TestFrontendExpiresLoginParameters(t *testing.T) {
 }
 
 func TestProductionURLRequirements(t *testing.T) {
-	for _, raw := range []string{"http://shop.example", "https://u:p@shop.example", "https://shop.example/path", "https://shop.example?shop=evil", ""} {
+	for _, raw := range []string{"http://store.example", "https://u:p@store.example", "https://store.example/path", "https://store.example?store=evil", ""} {
 		if checkURL(raw, false, true) == nil {
 			t.Errorf("accepted %q", raw)
 		}
@@ -663,7 +663,7 @@ func TestProductionURLRequirements(t *testing.T) {
 
 func TestPKCETamperingRejected(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	start := f.start(true)
 	u, _ := url.Parse(start.location)
 	q := u.Query()
@@ -678,15 +678,15 @@ func TestPKCETamperingRejected(t *testing.T) {
 // and show why profile enrichment still needs the Shopify GraphQL API.
 func TestNativePocketBaseOIDCProvider(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	p := auth.NewOIDCProvider()
 	p.SetContext(context.Background())
-	p.SetClientId(mockshop.ClientID)
+	p.SetClientId(mockstore.ClientID)
 	p.SetAuthURL(f.s.oauth.Endpoint.AuthURL)
 	p.SetTokenURL(f.s.oauth.Endpoint.TokenURL)
 	p.SetRedirectURL(f.s.oauth.RedirectURL)
 	p.SetScopes(f.s.oauth.Scopes)
-	p.SetExtra(map[string]any{"issuers": []string{f.s.issuer}, "jwksURL": f.shop.URL + "/jwks"})
+	p.SetExtra(map[string]any{"issuers": []string{f.s.issuer}, "jwksURL": f.store.URL + "/jwks"})
 	verifier := oauth2.GenerateVerifier()
 	a := f.request("GET", p.BuildAuthURL(oauth2.GenerateVerifier(), oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", oauth2.GenerateVerifier())), "", "", "")
 	f.expect(a, 302)
@@ -699,7 +699,7 @@ func TestNativePocketBaseOIDCProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Id == "" || user.Email != mockshop.Email {
+	if user.Id == "" || user.Email != mockstore.Email {
 		t.Fatal("native OIDC provider did not extract the identity")
 	}
 	if user.Name != "" {

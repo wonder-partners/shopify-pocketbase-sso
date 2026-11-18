@@ -16,12 +16,12 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			f := setup(t, "")
 			documentsCollection(f)
 			f.login()
-			shopToken, shop := f.authRecord()
+			storeToken, store := f.authRecord()
 			native := nativeSignup(f, "realtime-native@example.test")
 			nativeID := native.Record["id"].(string)
-			token, own, otherToken, other := shopToken, shop.Id, native.Token, nativeID
+			token, own, otherToken, other := storeToken, store.Id, native.Token, nativeID
 			if method == "password" {
-				token, own, otherToken, other = native.Token, nativeID, shopToken, shop.Id
+				token, own, otherToken, other = native.Token, nativeID, storeToken, store.Id
 			}
 			ownDoc := createDocument(f, token, own)
 			otherDoc := createDocument(f, otherToken, other)
@@ -57,7 +57,7 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("realtime connect timed out")
 			}
-			identity := privateIdentity(f, shop.Id)
+			identity := privateIdentity(f, store.Id)
 			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyIdentities/*","_shopifyIdentities/` + identity.Id + `"]}`
 			f.expect(f.request("POST", f.api.URL+"/api/realtime", "", body, token), 204)
 			identity.Set("customerId", "gid://shopify/Customer/67890")

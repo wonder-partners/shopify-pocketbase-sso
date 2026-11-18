@@ -32,7 +32,7 @@ type providerContext struct {
 
 var pkceVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 
-// A factory must not capture a global shop/app: multiple PocketBase instances
+// A factory must not capture a global store/app: multiple PocketBase instances
 // can coexist. The native request context selects the service for this request.
 func init() {
 	auth.Providers[providerName] = func() auth.Provider {

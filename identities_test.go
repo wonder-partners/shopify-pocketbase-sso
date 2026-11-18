@@ -220,7 +220,7 @@ func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 			if decodeAuth(t, password).Record["id"] != user.Id {
 				t.Fatal("unlink changed the password account")
 			}
-			f.loginShop()
+			f.loginStore()
 			f.expect(f.completeCallback(f.authorize(false)), 409)
 			// A new email may create a new account, but cannot recover the old one.
 			f.mock.ProfileEmail = "new-account@example.test"
@@ -294,7 +294,7 @@ func TestShopifyUnlinkLeavesOtherProvidersUnchanged(t *testing.T) {
 // End-to-end: unlinking never depends on Shopify being reachable. A link
 // without its identity is covered by TestIdentityRevocationEdgeCases.
 func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
-	f := setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Shopify unavailable", http.StatusServiceUnavailable)
 		})
@@ -306,7 +306,7 @@ func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
 	if err := f.app.Save(user); err != nil {
 		t.Fatal(err)
 	}
-	issuer, subject := f.shop.URL+"/identity", "previous-shopify-subject"
+	issuer, subject := f.store.URL+"/identity", "previous-shopify-subject"
 	if err := saveIdentity(f.app, user.Id, issuer, subject, "previous-customer", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
 				t.Fatal("native recovery kept the revoked private identity", err)
 			}
 			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", oldToken), http.StatusUnauthorized)
-			f.loginShop()
+			f.loginStore()
 			f.expect(f.completeCallback(f.authorize(false)), 409)
 			if count, err := f.app.CountRecords(core.CollectionNameExternalAuths); err != nil || count != 0 {
 				t.Fatal("revoked Shopify login recreated an OAuth link", err)
@@ -445,7 +445,7 @@ func identityCount(t *testing.T, app core.App, account string) int64 {
 }
 
 const (
-	testIssuer  = "https://shop.example.test/authentication"
+	testIssuer  = "https://store.example.test/authentication"
 	otherIssuer = "https://other.example.test/authentication"
 )
 
@@ -465,7 +465,7 @@ func TestIdentityStoreFindAndSave(t *testing.T) {
 		t.Fatal("saved identity not found for its account", err)
 	}
 	if other, err := findIdentity(app, otherIssuer, "42"); err != nil || other != nil {
-		t.Fatal("the same customer ID from another shop matched", err)
+		t.Fatal("the same customer ID from another store matched", err)
 	}
 	// Saving again updates the same identity instead of adding one.
 	if err := saveIdentity(app, camille.Id, testIssuer, "42", "gid://shopify/Customer/43", nil); err != nil {
@@ -560,7 +560,7 @@ func TestIdentityRevocationWithOAuthLink(t *testing.T) {
 				t.Fatalf("identity revoked = %v, want %v (%v)", remaining == nil, c.revoked, err)
 			}
 			if kept, err := findIdentity(app, otherIssuer, "42"); err != nil || kept == nil {
-				t.Fatal("revocation removed the identity from another shop", err)
+				t.Fatal("revocation removed the identity from another store", err)
 			}
 		})
 	}

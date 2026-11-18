@@ -17,10 +17,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Config selects the trusted Shopify shop, public OAuth client and host collection.
+// Config selects the trusted Shopify store, public OAuth client and host collection.
 // Configuration is supplied by the host; this package does not read environment variables.
 type Config struct {
-	ShopURL           string
+	StoreURL          string
 	RedirectURL       string // Full callback URL chosen and served by the host frontend.
 	ClientID          string
 	AuthCollection    string // Existing auth collection name or ID. Defaults to users.
@@ -47,7 +47,7 @@ type claims struct {
 	EmailVerified bool   `json:"email_verified"`
 }
 
-// The trusted shop URL is operator configuration, never a request parameter.
+// The trusted store URL is operator configuration, never a request parameter.
 func checkURL(raw string, allowHTTP, originOnly bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || u == nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -66,9 +66,9 @@ func checkURL(raw string, allowHTTP, originOnly bool) error {
 	return errors.New("HTTPS required; HTTP is allowed only on explicit loopback development URLs")
 }
 
-type shopTransport struct{ origin string }
+type storeTransport struct{ origin string }
 
-func (t shopTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t storeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
 	r.Header = req.Header.Clone()
 	r.Header.Set("Origin", t.origin)
@@ -90,7 +90,7 @@ func readJSON(client *http.Client, req *http.Request, target any) error {
 
 func (s *Service) discover(ctx context.Context) error {
 	var d discovery
-	req, _ := http.NewRequestWithContext(ctx, "GET", s.cfg.ShopURL+"/.well-known/openid-configuration", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", s.cfg.StoreURL+"/.well-known/openid-configuration", nil)
 	if err := readJSON(s.client, req, &d); err != nil {
 		return fmt.Errorf("OpenID discovery: %w", err)
 	}
@@ -102,7 +102,7 @@ func (s *Service) discover(ctx context.Context) error {
 	var api struct {
 		GraphQL string `json:"graphql_api"`
 	}
-	req, _ = http.NewRequestWithContext(ctx, "GET", s.cfg.ShopURL+"/.well-known/customer-account-api", nil)
+	req, _ = http.NewRequestWithContext(ctx, "GET", s.cfg.StoreURL+"/.well-known/customer-account-api", nil)
 	if err := readJSON(s.client, req, &api); err != nil {
 		return fmt.Errorf("API discovery: %w", err)
 	}

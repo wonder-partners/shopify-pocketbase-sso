@@ -30,7 +30,7 @@ go mod tidy
 
 Your application passes a `shopifysso.Config` to `shopifysso.New`. The library does not read environment variables itself.
 
-- `ShopURL`: the store's HTTPS URL, such as `https://my-store.myshopify.com`, without a path or trailing slash.
+- `StoreURL`: the store's HTTPS URL, such as `https://my-store.myshopify.com`, without a path or trailing slash.
 - `RedirectURL`: the full URL of your frontend callback page, registered with Shopify.
 - `ClientID`: your Shopify app's public client ID. No client secret is needed.
 - `AuthCollection`: the name or ID of an existing auth collection. Defaults to `users`.

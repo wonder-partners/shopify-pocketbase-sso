@@ -12,7 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 )
 
-// A Shopify identity ties one account to one customer of one Shopify shop
+// A Shopify identity ties one account to one customer of one Shopify store
 // (issuer). It always pairs with the account's Shopify OAuth link, whose
 // provider ID is derived from the same issuer and subject.
 const identitiesCollectionName = "_shopifyIdentities"
@@ -65,7 +65,7 @@ func ensureIdentityStore(app core.App, accounts *core.Collection) error {
 	return app.Save(c)
 }
 
-// findIdentity returns the Shopify identity of a shop customer, or nil.
+// findIdentity returns the Shopify identity of a store customer, or nil.
 func findIdentity(app core.App, issuer, subject string) (*shopifyIdentity, error) {
 	r, err := app.FindFirstRecordByFilter(identitiesCollectionName,
 		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": issuer, "subject": subject})
@@ -78,7 +78,7 @@ func findIdentity(app core.App, issuer, subject string) (*shopifyIdentity, error
 	return &shopifyIdentity{record: r}, nil
 }
 
-// saveIdentity records that account is this shop customer. An identity never
+// saveIdentity records that account is this store customer. An identity never
 // moves to another account. previous is the identity this login found before
 // a security purge within the same transaction; only it may be restored.
 func saveIdentity(app core.App, account, issuer, subject, customerID string, previous *shopifyIdentity) error {
