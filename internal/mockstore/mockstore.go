@@ -1,6 +1,6 @@
-// Package mockshop simulates the documented Shopify endpoints for local tests.
+// Package mockstore simulates the documented Shopify endpoints for local tests.
 // It is deliberately not a replacement identity provider for production.
-package mockshop
+package mockstore
 
 import (
 	"crypto/rand"
@@ -89,7 +89,7 @@ func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "POST required", 405)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "mock_shop_session", Value: "yes", HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "mock_store_session", Value: "yes", HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/"})
 		resume := r.URL.Query().Get("resume")
 		if resume == "" {
 			resume = "/"
@@ -110,7 +110,7 @@ func (m *Mock) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid authorization request", 400)
 		return
 	}
-	cookie, _ := r.Cookie("mock_shop_session")
+	cookie, _ := r.Cookie("mock_store_session")
 	if cookie == nil || cookie.Value != "yes" {
 		if q.Get("prompt") == "none" {
 			u, _ := url.Parse(m.Callback)

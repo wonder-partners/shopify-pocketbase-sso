@@ -1,183 +1,366 @@
 package shopifysso
 
 import (
-	"database/sql"
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
-	"net/http"
-	"strings"
-
-	"github.com/pocketbase/dbx"
-	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tools/hook"
+	"fmt"
 	"github.com/pocketbase/pocketbase/tools/router"
-	"github.com/pocketbase/pocketbase/tools/types"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
-// The host owns the auth collection, its fields and its access rules.
-// Only provision the integration's private identities collection.
-func ensureCollection(app core.App, collectionName string) error {
-	return app.RunInTransaction(func(tx core.App) error {
-		c, err := tx.FindCollectionByNameOrId(collectionName)
-		if err != nil {
-			return err
-		}
-		if !c.IsAuth() || c.Name == core.CollectionNameSuperusers {
-			return errors.New("Shopify requires a non-superuser auth collection")
-		}
-		return ensureAccountsCollection(tx, c)
-	})
+// store is the one Shopify store whose customers can log in. It runs
+// discovery in the background and verifies each login code. Discovery results
+// are published by closing readyCh, then remain immutable.
+type store struct {
+	cfg           Config
+	client        *http.Client
+	logger        func() *slog.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	readyCh, done chan struct{}
+
+	oauth           oauth2.Config
+	verifier        *oidc.IDTokenVerifier
+	issuer, graphql string
 }
 
-func (s *Service) configureProvider() error {
-	collection := s.collectionID
-	if collection == "" {
-		collection = s.cfg.AuthCollection
+// startStore discovers the store's endpoints in the background, retrying until
+// it succeeds or ctx is canceled. cfg must already be validated.
+func startStore(ctx context.Context, cfg Config, logger func() *slog.Logger) *store {
+	callback, _ := url.Parse(cfg.RedirectURL)
+	origin := callback.Scheme + "://" + callback.Host
+	st := &store{cfg: cfg, logger: logger, client: &http.Client{
+		Timeout: 10 * time.Second, Transport: storeTransport{origin: origin},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
+	st.ctx, st.cancel = context.WithCancel(ctx)
+	st.readyCh, st.done = make(chan struct{}), make(chan struct{})
+	go st.discoverInBackground()
+	return st
+}
+
+// ready reports whether discovery succeeded and the store is not stopped.
+func (st *store) ready() bool {
+	if st.ctx.Err() != nil {
+		return false
 	}
-	var c *core.Collection
-	// Read through the same transaction that saves the provider, so a host
-	// update cannot commit between our read and the collection replacement.
-	err := s.app.RunInTransaction(func(tx core.App) error {
-		var err error
-		c, err = tx.FindCollectionByNameOrId(collection)
-		if err != nil {
-			return err
+	select {
+	case <-st.readyCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// authURL is the store's authorization endpoint, or "" until it is ready.
+func (st *store) authURL() string {
+	if !st.ready() {
+		return ""
+	}
+	return st.oauth.Endpoint.AuthURL
+}
+
+// stop cancels discovery and waits for it to finish. It is safe to repeat.
+func (st *store) stop() {
+	st.cancel()
+	<-st.done
+}
+
+func (st *store) discoverInBackground() {
+	defer close(st.done)
+	delay := time.Second
+	for st.ctx.Err() == nil {
+		ctx, cancel := context.WithTimeout(st.ctx, 20*time.Second)
+		err := st.discover(ctx)
+		cancel()
+		if err == nil && st.ctx.Err() == nil {
+			// Provider configuration and hooks are already installed by New.
+			// Runtime endpoints need no database write or writer acquisition.
+			close(st.readyCh)
+			st.logger().Info("Shopify authentication is ready")
+			return
 		}
-		// PocketBase v0.40.5 requires a non-empty config field even for public
-		// clients. This public marker is never used by the provider's exchange.
-		config := core.OAuth2ProviderConfig{
-			Name: providerName, ClientId: s.cfg.ClientID, ClientSecret: "public-pkce-no-secret",
-			DisplayName: "Shopify", PKCE: types.Pointer(true),
+		if st.ctx.Err() != nil {
+			return
 		}
-		replaced := false
-		for i := range c.OAuth2.Providers {
-			if c.OAuth2.Providers[i].Name == providerName {
-				c.OAuth2.Providers[i] = config
-				replaced = true
-			}
+		st.logger().Warn("Shopify discovery unavailable; retrying", "error", err, "retry_in", delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-st.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
-		if !replaced {
-			c.OAuth2.Providers = append(c.OAuth2.Providers, config)
-		}
-		c.OAuth2.Enabled = true
-		return tx.Save(c)
-	})
+		delay = min(2*delay, time.Minute)
+	}
+}
+
+// verify exchanges a login code as a public PKCE client and checks everything
+// Shopify returns: the ID token (signature, issuer, audience, expiry, nonce,
+// access token hash) and the customer profile. Refusals are HTTP errors whose
+// messages carry only fixed diagnostic labels.
+func (st *store) verify(ctx context.Context, code, codeVerifier string) (verifiedCustomer, *oauth2.Token, error) {
+	if !st.ready() {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusServiceUnavailable, "Shopify authentication is temporarily unavailable.", nil)
+	}
+	ctx = oidc.ClientContext(ctx, st.client)
+	// Exchange as a public PKCE client, never using PocketBase's config marker.
+	token, err := st.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
+	if err != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
+	}
+	raw, _ := token.Extra("id_token").(string)
+	id, err := st.verifier.Verify(ctx, raw)
+	if err != nil {
+		reason := idTokenFailureReason(err)
+		st.logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify ID token ("+reason+").", nil)
+	}
+	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(oauth2.S256ChallengeFromVerifier(codeVerifier))) != 1 || id.Subject == "" {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify nonce or subject.", nil)
+	}
+	if id.AccessTokenHash != "" && id.VerifyAccessToken(token.AccessToken) != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid access token hash.", nil)
+	}
+	var c claims
+	if id.Claims(&c) != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify claims.", nil)
+	}
+	profile, err := st.fetchCustomer(ctx, token.AccessToken)
+	if err != nil {
+		return verifiedCustomer{}, nil, router.NewApiError(http.StatusBadGateway, "Unable to read the Shopify customer. Check Customer Account API permissions.", nil)
+	}
+	return verifiedCustomer{
+		issuer: st.issuer, subject: id.Subject, customerID: profile.ID, email: profile.EmailAddress.Email,
+		// PocketBase treats a provider email as verified. Only trust a verified
+		// ID token claim that matches the customer profile.
+		emailVerified: c.EmailVerified && strings.EqualFold(c.Email, profile.EmailAddress.Email),
+	}, token, nil
+}
+
+type discovery struct {
+	Issuer     string   `json:"issuer"`
+	AuthURL    string   `json:"authorization_endpoint"`
+	TokenURL   string   `json:"token_endpoint"`
+	JWKSURL    string   `json:"jwks_uri"`
+	Algorithms []string `json:"id_token_signing_alg_values_supported"`
+}
+
+type customer struct {
+	ID           string `json:"id"`
+	EmailAddress *struct {
+		Email string `json:"emailAddress"`
+	} `json:"emailAddress"`
+}
+
+type claims struct {
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+}
+
+type storeTransport struct{ origin string }
+
+func (t storeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := req.Clone(req.Context())
+	r.Header = req.Header.Clone()
+	r.Header.Set("Origin", t.origin)
+	r.Header.Set("User-Agent", "pocketbase-shopify")
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func readJSON(client *http.Client, req *http.Request, target any) error {
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	if s.collectionID == "" {
-		s.collectionID = c.Id
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("upstream HTTP %d", res.StatusCode)
 	}
-	// Collection IDs keep these hooks active when the host renames the collection.
-	s.app.OnRecordAuthWithOAuth2Request(c.Id).Bind(&hook.Handler[*core.RecordAuthWithOAuth2RequestEvent]{
-		Id: "studio_shopify_profile", Priority: -1000, Func: s.prepareOAuthRecord,
-	})
-	s.app.OnRecordAuthRequest(c.Id).Bind(&hook.Handler[*core.RecordAuthRequestEvent]{
-		Id: "studio_shopify_account", Priority: -1000, Func: func(e *core.RecordAuthRequestEvent) error {
-			p, ok := e.Get(trustedProfileKey).(*shopifyProvider)
-			if ok && p.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
-				if err := putAccount(e.App, e.Record.Id, s.issuer, p.subject, p.profile.ID, p.previousAccount); err != nil {
-					return e.InternalServerError("Unable to save the private Shopify identity.", nil)
-				}
-			}
-			return e.Next()
-		},
-	})
-	s.app.OnMailerRecordAuthAlertSend().Bind(&hook.Handler[*core.MailerRecordEvent]{
-		Id: "studio_shopify_auth_alert", Priority: -1000, Func: deferShopifyAuthAlert,
-	})
-	s.app.OnRecordDeleteRequest(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordRequestEvent]{
-		Id: "studio_shopify_unlink", Priority: -1000, Func: s.unlinkShopifyAccount,
-	})
-	s.app.OnRecordDeleteExecute(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_revoke", Priority: -1000, Func: s.revokeShopifyAccount,
-	})
-	s.app.OnRecordUpdateExecute(c.Id).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_verified_revoke", Priority: -1000, Func: revokeUnverifiedShopifyAccounts,
+	return json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(target)
+}
+
+func (st *store) discover(ctx context.Context) error {
+	var d discovery
+	req, _ := http.NewRequestWithContext(ctx, "GET", st.cfg.StoreURL+"/.well-known/openid-configuration", nil)
+	if err := readJSON(st.client, req, &d); err != nil {
+		return fmt.Errorf("OpenID discovery: %w", err)
+	}
+	for _, endpoint := range []string{d.Issuer, d.AuthURL, d.TokenURL, d.JWKSURL} {
+		if err := checkURL(endpoint, st.cfg.AllowLoopbackHTTP, false); err != nil {
+			return fmt.Errorf("discovery endpoint: %w", err)
+		}
+	}
+	var api struct {
+		GraphQL string `json:"graphql_api"`
+	}
+	req, _ = http.NewRequestWithContext(ctx, "GET", st.cfg.StoreURL+"/.well-known/customer-account-api", nil)
+	if err := readJSON(st.client, req, &api); err != nil {
+		return fmt.Errorf("API discovery: %w", err)
+	}
+	if err := checkURL(api.GraphQL, st.cfg.AllowLoopbackHTTP, false); err != nil {
+		return err
+	}
+	st.issuer, st.graphql = d.Issuer, api.GraphQL
+	st.oauth = oauth2.Config{
+		ClientID:    st.cfg.ClientID,
+		RedirectURL: st.cfg.RedirectURL,
+		Scopes:      []string{"openid", "email", "customer-account-api:full"},
+		Endpoint:    oauth2.Endpoint{AuthURL: d.AuthURL, TokenURL: d.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
+	}
+	keyCtx := oidc.ClientContext(st.ctx, st.client)
+	st.verifier = oidc.NewVerifier(d.Issuer, shopifySubjectKeySet{oidc.NewRemoteKeySet(keyCtx, d.JWKSURL)}, &oidc.Config{
+		ClientID: st.cfg.ClientID, SupportedSigningAlgs: d.Algorithms,
 	})
 	return nil
 }
 
-func (s *Service) prepareOAuthRecord(e *core.RecordAuthWithOAuth2RequestEvent) error {
-	if e.ProviderName != providerName {
-		return e.Next()
+// Shopify can return a JSON number for sub, contrary to OIDC's string type.
+// This adapter is only used INSIDE IDTokenVerifier: it checks the allowed JWT
+// algorithm, then calls this method to verify the ORIGINAL signed token.
+// Only after signature verification do we normalize the verified sub for its
+// claims decoder. Issuer, audience, expiry, nonce and at_hash checks stay active.
+type shopifySubjectKeySet struct{ oidc.KeySet }
+
+func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) ([]byte, error) {
+	payload, err := k.KeySet.VerifySignature(ctx, raw)
+	if err != nil {
+		return nil, err
 	}
-	p, ok := e.ProviderClient.(*shopifyProvider)
-	if !ok || p.service != s || p.profile == nil {
-		return e.ForbiddenError("Missing verified Shopify identity.", nil)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, errors.New("Shopify subject payload is invalid JSON")
 	}
-	// Native OAuth can find a record by verified email or current auth header.
-	// Neither is sufficient for our policy: require an existing Shopify identity.
-	a, err := e.App.FindFirstRecordByFilter(accountsCollectionName,
-		"issuer = {:issuer} && subject = {:subject}", dbx.Params{"issuer": s.issuer, "subject": p.subject})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	sub := bytes.TrimSpace(fields["sub"])
+	if len(sub) == 0 || sub[0] == '"' {
+		return payload, nil // Keep standard string subjects unchanged.
 	}
-	var r *core.Record
-	if a != nil {
-		r, err = e.App.FindRecordById(s.collectionID, a.GetString("user"))
-		if err != nil {
-			return err
+	if len(sub) > 255 || sub[0] < '1' || sub[0] > '9' {
+		return nil, errors.New("Shopify subject must be a string or positive decimal integer")
+	}
+	for _, digit := range sub {
+		if digit < '0' || digit > '9' {
+			return nil, errors.New("Shopify subject must be a string or positive decimal integer")
 		}
 	}
-	// A previous native login may have committed its external link before an
-	// interruption prevented saving our private row. Recover only from that
-	// exact native identity link, never from an email/header fallback candidate.
-	link, err := e.App.FindFirstExternalAuthByExpr(dbx.HashExp{
-		"collectionRef": e.Collection.Id, "provider": providerName,
-		"providerId": identityID(s.issuer, p.subject),
-	})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	// Use the exact decimal bytes, never float64, to preserve large Shopify IDs.
+	fields["sub"], _ = json.Marshal(string(sub))
+	return json.Marshal(fields)
+}
+
+func (st *store) fetchCustomer(ctx context.Context, accessToken string) (*customer, error) {
+	body, _ := json.Marshal(map[string]string{"query": `query StudioCustomer { customer { id emailAddress { emailAddress } } }`})
+	req, _ := http.NewRequestWithContext(ctx, "POST", st.graphql, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// Shopify Customer Account API uses the raw token here, without "Bearer".
+	req.Header.Set("Authorization", accessToken)
+	var result struct {
+		Data struct {
+			Customer *customer `json:"customer"`
+		} `json:"data"`
+		Errors []json.RawMessage `json:"errors"`
 	}
-	if link != nil {
-		if r != nil && r.Id != link.RecordRef() {
-			return e.ForbiddenError("Conflicting Shopify identity links.", nil)
+	if err := readJSON(st.client, req, &result); err != nil {
+		return nil, err
+	}
+	if len(result.Errors) > 0 {
+		return nil, errors.New("Customer Account API returned GraphQL errors; check customer permissions")
+	}
+	c := result.Data.Customer
+	if c == nil || !strings.HasPrefix(c.ID, "gid://shopify/Customer/") || c.EmailAddress == nil || c.EmailAddress.Email == "" {
+		return nil, errors.New("missing customer identity or email")
+	}
+	return c, nil
+}
+
+// Return only fixed labels: verifier errors can contain claims or upstream bodies.
+func idTokenFailureReason(err error) string {
+	var expired *oidc.TokenExpiredError
+	switch {
+	case errors.As(err, &expired):
+		return "expired"
+	case strings.Contains(err.Error(), "expected audience"):
+		return "audience_mismatch"
+	case strings.Contains(err.Error(), "different provider"):
+		return "issuer_mismatch"
+	case strings.Contains(err.Error(), "Shopify subject"):
+		return "subject_format_invalid"
+	case strings.Contains(err.Error(), "malformed jwt"):
+		return "token_format_or_algorithm"
+	case strings.HasPrefix(err.Error(), "oidc: failed to unmarshal claims:"):
+		return "claims_decode_failed"
+	case strings.HasPrefix(err.Error(), "oidc: current time "):
+		return "not_yet_valid"
+	case strings.HasPrefix(err.Error(), "oidc: failed to obtain source from claim name"), strings.HasPrefix(err.Error(), "oidc: source does not exist"):
+		return "distributed_claims_invalid"
+	case strings.HasPrefix(err.Error(), "oidc: invalid configuration"):
+		return "verifier_configuration_invalid"
+	case strings.HasPrefix(err.Error(), "oidc: id token not signed"), strings.HasPrefix(err.Error(), "oidc: multiple signatures"):
+		return "token_signature_format"
+	case strings.Contains(err.Error(), "context canceled"):
+		return "verification_cancelled"
+	case strings.Contains(err.Error(), "context deadline exceeded"):
+		return "verification_timeout"
+	case strings.Contains(err.Error(), "get keys failed"):
+		return "jwks_fetch_failed"
+	case strings.Contains(err.Error(), "failed to decode keys"):
+		return "jwks_decode_failed"
+	case strings.Contains(err.Error(), "failed to verify id token signature"):
+		return "signature_mismatch"
+	case strings.Contains(err.Error(), "fetching keys"):
+		return "jwks_read_failed"
+	default:
+		return "verification_failed"
+	}
+}
+
+// Diagnostic only. Report JSON types of known OIDC fields, never their values.
+// This unverified payload must never be used to authenticate or create a session.
+func idTokenClaimTypes(raw string) map[string]string {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 || len(parts[1]) > 64*1024 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var values map[string]json.RawMessage
+	if json.Unmarshal(payload, &values) != nil {
+		return nil
+	}
+	types := map[string]string{}
+	for _, field := range []string{"iss", "sub", "aud", "exp", "iat", "nbf", "nonce", "at_hash", "_claim_names", "_claim_sources"} {
+		value := bytes.TrimSpace(values[field])
+		if len(value) == 0 {
+			continue
 		}
-		r, err = e.App.FindRecordById(s.collectionID, link.RecordRef())
-		if err != nil {
-			return err
+		kind := "number"
+		switch value[0] {
+		case '"':
+			kind = "string"
+		case '[':
+			kind = "array"
+		case '{':
+			kind = "object"
+		case 't', 'f':
+			kind = "boolean"
+		case 'n':
+			kind = "null"
 		}
+		types[field] = kind
 	}
-	if e.Record != nil && (r == nil || e.Record.Id != r.Id) {
-		return router.NewApiError(http.StatusConflict, "Shopify cannot automatically link an existing account.", nil)
-	}
-	if r != nil {
-		e.Record, e.IsNewRecord = r, false
-	}
-	emailOwner, err := e.App.FindAuthRecordByEmail(s.collectionID, p.profile.EmailAddress.Email)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if emailOwner != nil && (r == nil || emailOwner.Id != r.Id) {
-		return router.NewApiError(http.StatusConflict, "Shopify email conflicts with an existing account.", nil)
-	}
-	e.Set(trustedProfileKey, p)
-	p.previousAccount = a
-	if r == nil {
-		if e.CreateData == nil {
-			e.CreateData = map[string]any{}
-		}
-		e.CreateData["email"] = p.profile.EmailAddress.Email
-		delete(e.CreateData, "verified")
-		delete(e.CreateData, "password")
-		delete(e.CreateData, "passwordConfirm")
-	} else {
-		upgradeVerified := !r.Verified() && e.OAuth2User.Email != ""
-		keepVerified := r.Verified() && strings.EqualFold(r.Email(), p.profile.EmailAddress.Email)
-		r.SetEmail(p.profile.EmailAddress.Email)
-		r.SetVerified(keepVerified || e.OAuth2User.Email != "")
-		if err := e.App.Save(r); err != nil {
-			return router.NewApiError(http.StatusConflict, "Unable to synchronize the Shopify profile.", nil)
-		}
-		// Verification revokes all old OAuth links. Native OAuth still holds
-		// the deleted Shopify link and won't recreate it, so restore only this
-		// exact identity within the auth transaction. Keep other links revoked.
-		if upgradeVerified && link != nil {
-			link.MarkAsNew()
-			if err := e.App.Save(link); err != nil {
-				return router.NewApiError(http.StatusConflict, "Unable to restore the Shopify identity link.", nil)
-			}
-		}
-	}
-	return e.Next()
+	return types
 }

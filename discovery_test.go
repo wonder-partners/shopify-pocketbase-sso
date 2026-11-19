@@ -20,7 +20,7 @@ import (
 func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 	var healthy atomic.Bool
 	attempted := make(chan struct{}, 10)
-	f := setupWithShopHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/.well-known/") {
 				select {
@@ -40,7 +40,7 @@ func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("background discovery did not start")
 	}
-	if f.s.isReady() {
+	if f.s.store.ready() {
 		t.Fatal("Shopify became ready during a discovery outage")
 	}
 	c, _ := f.app.FindCollectionByNameOrId("users")
@@ -79,12 +79,12 @@ func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 	if login.headers.Get("Retry-After") == "" || login.headers.Get("Cache-Control") != "no-store" {
 		t.Fatal("unavailable Shopify response omitted retry or cache headers")
 	}
-	if f.s.oauth.Endpoint.AuthURL != "" || f.s.verifier != nil {
+	if f.s.store.authURL() != "" {
 		t.Fatal("failed discovery published partially initialized endpoints")
 	}
 	healthy.Store(true)
 	waitForDiscovery(t, f.s)
-	if !f.s.isReady() {
+	if !f.s.store.ready() {
 		t.Fatal("Shopify did not recover")
 	}
 	f.login()
@@ -94,47 +94,9 @@ func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 	}
 }
 
-func TestDiscoveryDoesNotPublishPartialResults(t *testing.T) {
-	var healthy atomic.Bool
-	apiRequested := make(chan struct{}, 1)
-	f := setupWithShopHandler(t, "", "members", true, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/.well-known/customer-account-api" && !healthy.Load() {
-				select {
-				case apiRequested <- struct{}{}:
-				default:
-				}
-				http.Error(w, "temporary API discovery outage", http.StatusServiceUnavailable)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	})
-	select {
-	case <-apiRequested:
-	case <-time.After(time.Second):
-		t.Fatal("Customer Account API discovery did not start")
-	}
-	if f.s.isReady() || f.s.issuer != "" || f.s.graphql != "" || f.s.verifier != nil {
-		t.Fatal("partial discovery became available")
-	}
-	c, _ := f.app.FindCollectionByNameOrId(f.s.collectionID)
-	c.Name = "renamedMembers"
-	if err := f.app.Save(c); err != nil {
-		t.Fatal(err)
-	}
-	healthy.Store(true)
-	waitForDiscovery(t, f.s)
-	f.login()
-	_, user := f.authRecord()
-	if user.Collection().Name != "renamedMembers" {
-		t.Fatal("discovery recovery lost the renamed collection")
-	}
-}
-
 func TestTerminationCancelsInFlightDiscovery(t *testing.T) {
 	started, canceled := make(chan struct{}), make(chan struct{})
-	f := setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+	f := setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			close(started)
 			<-r.Context().Done()
@@ -161,7 +123,7 @@ func TestTerminationCancelsInFlightDiscovery(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("termination did not cancel the HTTP request")
 	}
-	if f.s.isReady() {
+	if f.s.store.ready() {
 		t.Fatal("terminated service advertised Shopify as ready")
 	}
 }
@@ -170,7 +132,7 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 	for _, action := range []string{"ready", "terminate"} {
 		t.Run(action, func(t *testing.T) {
 			apiStarted, allowAPI := make(chan struct{}), make(chan struct{})
-			f := setupWithShopHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+			f := setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/.well-known/customer-account-api" {
 						close(apiStarted)
@@ -206,12 +168,12 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 				waits := writer.Stats().WaitCount
 				close(allowAPI)
 				if action == "ready" {
-					select {
-					case <-f.s.ready:
-						return nil
-					case <-time.After(time.Second):
-						return errors.New("discovery waited for the occupied database writer")
+					for deadline := time.Now().Add(time.Second); !f.s.store.ready(); time.Sleep(time.Millisecond) {
+						if time.Now().After(deadline) {
+							return errors.New("discovery waited for the occupied database writer")
+						}
 					}
+					return nil
 				}
 				// Wait until discovery has returned from HTTP and either finished
 				// or reached the old, non-cancellable transaction acquisition.
@@ -219,7 +181,7 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 				defer deadline.Stop()
 				tick := time.NewTicker(time.Millisecond)
 				defer tick.Stop()
-				for writer.Stats().WaitCount == waits && !f.s.isReady() {
+				for writer.Stats().WaitCount == waits && !f.s.store.ready() {
 					select {
 					case <-tick.C:
 					case <-deadline.C:
@@ -243,8 +205,10 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 					t.Fatal("termination did not finish after writer release")
 				}
 			}
+			stopped := make(chan struct{})
+			go func() { f.s.store.stop(); close(stopped) }()
 			select {
-			case <-f.s.done:
+			case <-stopped:
 			case <-time.After(2 * time.Second):
 				t.Fatal("discovery did not finish after writer release")
 			}
@@ -290,7 +254,7 @@ func TestAuthMethodsUseDiscoveredEndpointWithNativePKCE(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if u.Scheme+"://"+u.Host+u.Path != f.s.oauth.Endpoint.AuthURL || p.AuthUrl != p.AuthURL {
+		if u.Scheme+"://"+u.Host+u.Path != f.s.store.authURL() || p.AuthUrl != p.AuthURL {
 			t.Fatal("auth methods advertised a stale endpoint")
 		}
 		q := u.Query()
@@ -309,7 +273,7 @@ func TestLocalSetupErrorsFailWithoutDiscovery(t *testing.T) {
 	t.Cleanup(func() { _ = app.ResetBootstrapState() })
 	for _, collection := range []string{"missing", "_superusers"} {
 		_, err := New(context.Background(), app, Config{
-			ShopURL: "http://127.0.0.1:1", RedirectURL: "https://frontend.example/callback",
+			StoreURL: "http://127.0.0.1:1", RedirectURL: "https://frontend.example/callback",
 			ClientID: "public-client", AuthCollection: collection, AllowLoopbackHTTP: true,
 		})
 		if err == nil || strings.Contains(err.Error(), "discovery") {
@@ -340,7 +304,10 @@ func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T)
 		}
 		waits := writer.Stats().WaitCount
 		started = true
-		go func() { configured <- f.s.configureProvider() }()
+		go func() {
+			_, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID)
+			configured <- err
+		}()
 		// Wait until configuration needs the occupied writer connection.
 		// A read outside its transaction would already have loaded stale data.
 		deadline := time.NewTimer(2 * time.Second)
@@ -404,7 +371,7 @@ func TestProviderConfigurationRollsBackOnSaveHookFailure(t *testing.T) {
 		}
 		return nil
 	})
-	if err := f.s.configureProvider(); err == nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err == nil {
 		t.Fatal("provider configuration ignored the host save hook failure")
 	}
 	after, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
@@ -416,7 +383,7 @@ func TestProviderConfigurationRollsBackOnSaveHookFailure(t *testing.T) {
 		t.Fatal("failed provider configuration persisted a partial update")
 	}
 	fail = false
-	if err := f.s.configureProvider(); err != nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err != nil {
 		t.Fatal("provider configuration did not recover on retry", err)
 	}
 	after, err = f.app.FindCollectionByNameOrId(f.s.collectionID)

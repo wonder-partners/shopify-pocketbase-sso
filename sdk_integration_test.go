@@ -14,7 +14,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 		t.Skip("run mise run test to include the official JS SDK OAuth integration")
 	}
 	f := setup(t, "numeric:")
-	input := map[string]string{"url": f.api.URL, "shopURL": f.shop.URL, "redirectURL": f.s.cfg.RedirectURL}
+	input := map[string]string{"url": f.api.URL, "storeURL": f.store.URL, "redirectURL": f.s.cfg.RedirectURL}
 	data, _ := json.Marshal(input)
 	script, _ := filepath.Abs("tests/sdk/oauth.test.mjs")
 	cmd := exec.Command("node", script)
@@ -24,7 +24,7 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 		t.Fatal("official SDK authWithOAuth2Code integration failed:", err)
 	}
 	users, err := f.app.FindAllRecords("users")
-	if err != nil || len(users) != 1 || privateAccount(f, users[0].Id).GetString("subject") != "900719925474099312345" {
+	if err != nil || len(users) != 1 || privateIdentity(f, users[0].Id).GetString("subject") != "900719925474099312345" {
 		t.Fatal("official SDK login did not preserve the exact subject in private storage")
 	}
 }
