@@ -116,12 +116,12 @@ func saveIdentity(app core.App, account, issuer, subject, customerID string, pre
 // verification, OTP and password recovery purges.
 func bindIdentityRevocation(app core.App, accounts string) {
 	app.OnRecordDeleteExecute(core.CollectionNameExternalAuths).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_revoke", Priority: -1000, Func: func(e *core.RecordEvent) error {
+		Id: "shopify_revoke_with_oauth_link", Priority: runBeforeHostHooks, Func: func(e *core.RecordEvent) error {
 			return revokeIdentityWithOAuthLink(e, accounts)
 		},
 	})
 	app.OnRecordUpdateExecute(accounts).Bind(&hook.Handler[*core.RecordEvent]{
-		Id: "studio_shopify_verified_revoke", Priority: -1000, Func: revokeIdentitiesOnVerification,
+		Id: "shopify_revoke_on_verification", Priority: runBeforeHostHooks, Func: revokeIdentitiesOnVerification,
 	})
 }
 

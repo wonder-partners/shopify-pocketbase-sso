@@ -6,8 +6,6 @@ import (
 	"net/url"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tools/hook"
-	"github.com/pocketbase/pocketbase/tools/router"
 )
 
 // Service connects one Shopify store to one PocketBase auth collection.
@@ -46,27 +44,14 @@ func New(ctx context.Context, app core.App, cfg Config) (*Service, error) {
 	if err := ensureCollection(app, cfg.AuthCollection); err != nil {
 		return nil, err
 	}
-	if err := s.configureProvider(); err != nil {
+	id, err := saveProviderConfig(app, cfg.AuthCollection, cfg.ClientID)
+	if err != nil {
 		return nil, err
 	}
+	s.collectionID = id
+	s.bindHooks()
 	s.store = startStore(ctx, cfg, app.Logger)
-	app.OnTerminate().Bind(&hook.Handler[*core.TerminateEvent]{
-		Id: "shopify_discovery", Priority: -1000, Func: func(e *core.TerminateEvent) error {
-			s.store.stop()
-			return e.Next()
-		},
-	})
 	return s, nil
-}
-
-// Register binds Shopify verification to PocketBase's native OAuth endpoint.
-// No custom route or cookie is created. The frontend owns its redirect callback
-// and checks the state returned by listAuthMethods.
-func (s *Service) Register(r *router.Router[*core.RequestEvent]) {
-	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "shopify_oauth2", Func: s.nativeOAuthMiddleware})
-	// PocketBase's native gzip middleware has priority 0. Rewrite its inner
-	// JSON response before compression, independently of registration order.
-	r.Bind(&hook.Handler[*core.RequestEvent]{Id: "shopify_auth_methods", Priority: 1, Func: s.nativeAuthMethodsMiddleware})
 }
 
 func noStore(e *core.RequestEvent) {

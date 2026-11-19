@@ -64,9 +64,9 @@ func waitForDiscovery(t *testing.T, s *Service) {
 func setupWithStoreHandler(t *testing.T, fault, collection string, useID bool, wrap func(http.Handler) http.Handler) *fixture {
 	t.Helper()
 	f := &fixture{t: t, api: httptest.NewUnstartedServer(nil), store: httptest.NewUnstartedServer(nil)}
-	studioURL := "http://" + f.api.Listener.Addr().String()
+	appURL := "http://" + f.api.Listener.Addr().String()
 	storeURL := "http://" + f.store.Listener.Addr().String()
-	m, err := mockstore.New(storeURL, studioURL+"/oauth/callback", fault)
+	m, err := mockstore.New(storeURL, appURL+"/oauth/callback", fault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func setupWithStoreHandler(t *testing.T, fault, collection string, useID bool, w
 	if err := f.app.Save(users); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{StoreURL: storeURL, RedirectURL: studioURL + "/oauth/callback", ClientID: mockstore.ClientID, AllowLoopbackHTTP: true}
+	cfg := Config{StoreURL: storeURL, RedirectURL: appURL + "/oauth/callback", ClientID: mockstore.ClientID, AllowLoopbackHTTP: true}
 	if useID {
 		cfg.AuthCollection = users.Id
 	} else if collection != "users" {

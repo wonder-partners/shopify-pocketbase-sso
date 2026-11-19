@@ -417,7 +417,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.configureProvider(); err != nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = f.app.FindCollectionByNameOrId("users")

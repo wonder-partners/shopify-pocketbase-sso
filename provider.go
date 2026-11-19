@@ -17,9 +17,6 @@ import (
 
 const providerName = "shopify"
 
-// The event store key carrying a started Shopify login to its second step.
-const shopifyLoginKey = "studio_shopify_verified_profile"
-
 type providerContextKey struct{}
 type providerContext struct {
 	service  *Service

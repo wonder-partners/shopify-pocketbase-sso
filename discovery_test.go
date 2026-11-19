@@ -304,7 +304,10 @@ func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T)
 		}
 		waits := writer.Stats().WaitCount
 		started = true
-		go func() { configured <- f.s.configureProvider() }()
+		go func() {
+			_, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID)
+			configured <- err
+		}()
 		// Wait until configuration needs the occupied writer connection.
 		// A read outside its transaction would already have loaded stale data.
 		deadline := time.NewTimer(2 * time.Second)
@@ -368,7 +371,7 @@ func TestProviderConfigurationRollsBackOnSaveHookFailure(t *testing.T) {
 		}
 		return nil
 	})
-	if err := f.s.configureProvider(); err == nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err == nil {
 		t.Fatal("provider configuration ignored the host save hook failure")
 	}
 	after, err := f.app.FindCollectionByNameOrId(f.s.collectionID)
@@ -380,7 +383,7 @@ func TestProviderConfigurationRollsBackOnSaveHookFailure(t *testing.T) {
 		t.Fatal("failed provider configuration persisted a partial update")
 	}
 	fail = false
-	if err := f.s.configureProvider(); err != nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err != nil {
 		t.Fatal("provider configuration did not recover on retry", err)
 	}
 	after, err = f.app.FindCollectionByNameOrId(f.s.collectionID)

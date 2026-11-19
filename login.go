@@ -11,6 +11,9 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 )
 
+// The event store key carrying a started Shopify login to its second step.
+const shopifyLoginKey = "shopify_login"
+
 // verifiedCustomer is what Shopify verified about the customer of one login.
 type verifiedCustomer struct {
 	issuer, subject, customerID, email string
@@ -117,4 +120,45 @@ func (l *shopifyLogin) newAccountData(data map[string]any) map[string]any {
 // login's own identity if a security purge removed it during the login.
 func (l *shopifyLogin) finish(app core.App, account string) error {
 	return saveIdentity(app, account, l.customer.issuer, l.customer.subject, l.customer.customerID, l.previous)
+}
+
+// The two PocketBase steps of a Shopify login only translate between
+// PocketBase events and the Shopify login above.
+
+// startLoginHook runs before PocketBase loads or creates the account.
+func (s *Service) startLoginHook(e *core.RecordAuthWithOAuth2RequestEvent) error {
+	if e.ProviderName != providerName {
+		return e.Next()
+	}
+	p, ok := e.ProviderClient.(*shopifyProvider)
+	if !ok || p.service != s || p.token == nil {
+		return e.ForbiddenError("Missing verified Shopify identity.", nil)
+	}
+	// Native OAuth proposes e.Record by verified email or current auth header.
+	// The Shopify login only accepts it when it is the customer's own account.
+	customer := p.customer
+	customer.emailVerified = e.OAuth2User.Email != ""
+	login, err := startShopifyLogin(e.App, s.collectionID, customer, e.Record)
+	if err != nil {
+		return err
+	}
+	login.service = s
+	e.Set(shopifyLoginKey, login)
+	if account := login.account(); account != nil {
+		e.Record, e.IsNewRecord = account, false
+	} else {
+		e.CreateData = login.newAccountData(e.CreateData)
+	}
+	return e.Next()
+}
+
+// finishLoginHook runs once PocketBase has the account of a started login.
+func (s *Service) finishLoginHook(e *core.RecordAuthRequestEvent) error {
+	login, ok := e.Get(shopifyLoginKey).(*shopifyLogin)
+	if ok && login.service == s && e.AuthMethod == core.MFAMethodOAuth2 {
+		if err := login.finish(e.App, e.Record.Id); err != nil {
+			return e.InternalServerError("Unable to save the private Shopify identity.", nil)
+		}
+	}
+	return e.Next()
 }
