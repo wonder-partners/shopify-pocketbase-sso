@@ -6,7 +6,7 @@ import (
 )
 
 func deferShopifyAuthAlert(e *core.MailerRecordEvent) error {
-	login, ok := shopifyLoginOf(e.App)
+	tx, ok := shopifyAuthTransactionOf(e.App)
 	if !ok {
 		return e.Next()
 	}
@@ -14,7 +14,7 @@ func deferShopifyAuthAlert(e *core.MailerRecordEvent) error {
 	// record from the auth response; deferred hooks get the nontransactional
 	// app, so they can read and write after the login has committed.
 	e.Record = e.Record.Clone()
-	login.afterCommit(func(app core.App) {
+	tx.afterCommit(func(app core.App) {
 		e.App = app
 		routine.FireAndForget(func() {
 			if err := e.Next(); err != nil {

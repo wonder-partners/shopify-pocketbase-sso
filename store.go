@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pocketbase/pocketbase/tools/router"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"golang.org/x/oauth2"
 )
 
@@ -261,7 +261,7 @@ func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) (
 }
 
 func (st *store) fetchCustomer(ctx context.Context, accessToken string) (*customer, error) {
-	body, _ := json.Marshal(map[string]string{"query": `query StudioCustomer { customer { id emailAddress { emailAddress } } }`})
+	body, _ := json.Marshal(map[string]string{"query": `query ShopifyCustomer { customer { id emailAddress { emailAddress } } }`})
 	req, _ := http.NewRequestWithContext(ctx, "POST", st.graphql, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	// Shopify Customer Account API uses the raw token here, without "Bearer".

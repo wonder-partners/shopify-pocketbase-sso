@@ -22,7 +22,8 @@ type providerContext struct {
 	service  *Service
 	verifier string
 	code     string
-	prepared *shopifyProvider
+	customer verifiedCustomer
+	token    *oauth2.Token
 }
 
 var pkceVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
@@ -74,12 +75,11 @@ func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*
 	if p.RedirectURL() != s.cfg.RedirectURL || p.ClientId() != s.cfg.ClientID {
 		return nil, errors.New("invalid Shopify client or redirect URL")
 	}
-	if flow.prepared != nil {
+	if flow.token != nil {
 		if code != flow.code {
 			return nil, errors.New("Shopify code differs from the verified request")
 		}
-		verified := flow.prepared
-		p.service, p.customer, p.token = verified.service, verified.customer, verified.token
+		p.service, p.customer, p.token = s, flow.customer, flow.token
 		return p.token, nil
 	}
 	customer, token, err := s.store.verify(p.Context(), code, flow.verifier)
@@ -148,29 +148,25 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if !c.OAuth2.Enabled || !ok || body.Code == "" {
 		return e.Next() // Let PocketBase return its native configuration/form error.
 	}
-	provider, err := config.InitProvider()
-	if err != nil {
-		return e.InternalServerError("Failed to initialize the Shopify provider.", nil)
-	}
-	prepared, ok := provider.(*shopifyProvider)
-	if !ok {
-		return e.ForbiddenError("Missing Shopify provider.", nil)
-	}
 	if body.RedirectURL == "" {
 		body.RedirectURL = body.RedirectUrl
+	}
+	if body.RedirectURL != s.cfg.RedirectURL || config.ClientId != s.cfg.ClientID {
+		return errors.New("invalid Shopify client or redirect URL")
 	}
 	// Complete all Shopify I/O before acquiring the database write transaction.
 	// The native provider reuses this request-local verified result in its normal
 	// token/user lookup, without exchanging the code a second time.
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
 	defer cancel()
-	flow := providerContext{service: s, verifier: body.CodeVerifier, code: body.Code}
-	prepared.SetContext(context.WithValue(ctx, providerContextKey{}, flow))
-	prepared.SetRedirectURL(body.RedirectURL)
-	if _, err := prepared.FetchToken(body.Code); err != nil {
+	customer, token, err := s.store.verify(ctx, body.Code, body.CodeVerifier)
+	if err != nil {
 		return err
 	}
-	flow.prepared = prepared
+	flow := providerContext{
+		service: s, verifier: body.CodeVerifier, code: body.Code,
+		customer: customer, token: token,
+	}
 	e.Request = e.Request.WithContext(context.WithValue(ctx, providerContextKey{}, flow))
 	return s.respondToOAuth(e)
 }

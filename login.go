@@ -136,9 +136,7 @@ func (s *Service) startLoginHook(e *core.RecordAuthWithOAuth2RequestEvent) error
 	}
 	// Native OAuth proposes e.Record by verified email or current auth header.
 	// The Shopify login only accepts it when it is the customer's own account.
-	customer := p.customer
-	customer.emailVerified = e.OAuth2User.Email != ""
-	login, err := startShopifyLogin(e.App, s.collectionID, customer, e.Record)
+	login, err := startShopifyLogin(e.App, s.collectionID, p.customer, e.Record)
 	if err != nil {
 		return err
 	}

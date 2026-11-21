@@ -517,13 +517,13 @@ func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
 	}
 }
 
-func TestShopifyLoginOfRecognizesOnlyShopifyLogins(t *testing.T) {
+func TestShopifyAuthTransactionOfRecognizesOnlyShopifyLogins(t *testing.T) {
 	app := committedResponseApp(t)
-	if _, ok := shopifyLoginOf(app); ok {
+	if _, ok := shopifyAuthTransactionOf(app); ok {
 		t.Fatal("a plain app was taken for a Shopify login")
 	}
 	err := app.RunInTransaction(func(tx core.App) error {
-		if _, ok := shopifyLoginOf(tx); ok {
+		if _, ok := shopifyAuthTransactionOf(tx); ok {
 			t.Fatal("a plain transaction was taken for a Shopify login")
 		}
 		login := &shopifyAuthTransaction{App: tx, original: app}
@@ -531,13 +531,13 @@ func TestShopifyLoginOfRecognizesOnlyShopifyLogins(t *testing.T) {
 			"login":                login,
 			"native response step": &authResponseApp{App: tx, transaction: login},
 		} {
-			if got, ok := shopifyLoginOf(candidate); !ok || got != login {
+			if got, ok := shopifyAuthTransactionOf(candidate); !ok || got != login {
 				t.Fatalf("%s: login not recognized", name)
 			}
 		}
 		// Project hooks may open nested transactions; the login must survive them.
 		return login.RunInTransaction(func(nested core.App) error {
-			if got, ok := shopifyLoginOf(nested); !ok || got != login {
+			if got, ok := shopifyAuthTransactionOf(nested); !ok || got != login {
 				t.Fatal("nested transaction lost the Shopify login")
 			}
 			return nil

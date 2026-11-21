@@ -25,9 +25,9 @@ func (s *Service) respondToOAuth(e *core.RequestEvent) error {
 	})
 }
 
-// shopifyLoginOf reports whether app belongs to a Shopify login whose changes
-// are not committed yet, whichever internal app a PocketBase hook received.
-func shopifyLoginOf(app core.App) (*shopifyAuthTransaction, bool) {
+// shopifyAuthTransactionOf reports whether app belongs to a Shopify login whose
+// changes are not committed yet, whichever internal app a PocketBase hook received.
+func shopifyAuthTransactionOf(app core.App) (*shopifyAuthTransaction, bool) {
 	switch a := app.(type) {
 	case *shopifyAuthTransaction:
 		return a, true
