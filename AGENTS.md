@@ -1,0 +1,2 @@
+- Before finishing changes, run `mise run check` (see `mise.toml`: Go tests with `RUN_JS_SDK_TEST=1`, `gofmt`, `go vet`, `go build`, `node --check`, `govulncheck`).
+- Before writing code, docs, or PR descriptions, read `GLOSSARY.md` (when present) for domain terms.
