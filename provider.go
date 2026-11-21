@@ -28,8 +28,6 @@ type providerContext struct {
 
 var pkceVerifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 
-// A factory must not capture a global store/app: multiple PocketBase instances
-// can coexist. The native request context selects the service for this request.
 func init() {
 	auth.Providers[providerName] = func() auth.Provider {
 		p := &shopifyProvider{}
@@ -49,9 +47,6 @@ type shopifyProvider struct {
 
 var _ auth.Provider = (*shopifyProvider)(nil)
 
-// PocketBase generates a fresh S256 challenge in listAuthMethods. Reuse that
-// random public value as the OIDC nonce, never the secret verifier. This lets
-// FetchToken check the nonce against the submitted verifier without server state.
 func (p *shopifyProvider) BuildAuthURL(state string, opts ...oauth2.AuthCodeOption) string {
 	u, err := url.Parse(p.BaseProvider.BuildAuthURL(state, opts...))
 	if err != nil {
@@ -61,9 +56,17 @@ func (p *shopifyProvider) BuildAuthURL(state string, opts ...oauth2.AuthCodeOpti
 	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
 		return ""
 	}
-	q.Set("nonce", q.Get("code_challenge"))
+	q.Set("nonce", statelessOIDCNonce(q.Get("code_challenge")))
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+func statelessOIDCNonce(codeChallenge string) string {
+	return codeChallenge
+}
+
+func expectedStatelessOIDCNonce(codeVerifier string) string {
+	return statelessOIDCNonce(oauth2.S256ChallengeFromVerifier(codeVerifier))
 }
 
 func (p *shopifyProvider) FetchToken(code string, _ ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
@@ -96,14 +99,13 @@ func (p *shopifyProvider) FetchAuthUser(token *oauth2.Token) (*auth.AuthUser, er
 	}
 	u := &auth.AuthUser{
 		Id:      oauthLinkProviderID(p.customer.issuer, p.customer.subject),
-		RawUser: map[string]any{}, // Technical identifiers stay in the private collection.
+		RawUser: map[string]any{},
 	}
 	// PocketBase treats AuthUser.Email as verified. Keep an unverified email
 	// exclusively in the trusted record payload, never in this verified field.
 	if p.customer.emailVerified {
 		u.Email = p.customer.email
 	}
-	// Do not expose upstream access/refresh tokens in PocketBase's auth meta.
 	u.Expiry.Scan(token.Expiry)
 	return u, nil
 }
@@ -146,7 +148,7 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	}
 	config, ok := c.OAuth2.GetProviderConfig(providerName)
 	if !c.OAuth2.Enabled || !ok || body.Code == "" {
-		return e.Next() // Let PocketBase return its native configuration/form error.
+		return e.Next()
 	}
 	if body.RedirectURL == "" {
 		body.RedirectURL = body.RedirectUrl
@@ -154,9 +156,6 @@ func (s *Service) nativeOAuthMiddleware(e *core.RequestEvent) error {
 	if body.RedirectURL != s.cfg.RedirectURL || config.ClientId != s.cfg.ClientID {
 		return errors.New("invalid Shopify client or redirect URL")
 	}
-	// Complete all Shopify I/O before acquiring the database write transaction.
-	// The native provider reuses this request-local verified result in its normal
-	// token/user lookup, without exchanging the code a second time.
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
 	defer cancel()
 	customer, token, err := s.store.verify(ctx, body.Code, body.CodeVerifier)

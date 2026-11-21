@@ -44,7 +44,6 @@ func TestDiscoveryFailureKeepsPocketBaseAvailableAndRecovers(t *testing.T) {
 		t.Fatal("Shopify became ready during a discovery outage")
 	}
 	c, _ := f.app.FindCollectionByNameOrId("users")
-	// A persisted endpoint from an earlier run must never be advertised as ready.
 	c.OAuth2.Providers[0].AuthURL = "https://old.example/authorize"
 	c.OAuth2.Providers = append(c.OAuth2.Providers, core.OAuth2ProviderConfig{Name: "google", ClientId: "google-client", ClientSecret: "google-secret"})
 	c.OTP.Enabled = true
@@ -175,8 +174,6 @@ func TestDiscoveryAndTerminationDoNotWaitForDatabaseWriter(t *testing.T) {
 					}
 					return nil
 				}
-				// Wait until discovery has returned from HTTP and either finished
-				// or reached the old, non-cancellable transaction acquisition.
 				deadline := time.NewTimer(time.Second)
 				defer deadline.Stop()
 				tick := time.NewTicker(time.Millisecond)
@@ -308,8 +305,6 @@ func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T)
 			_, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID)
 			configured <- err
 		}()
-		// Wait until configuration needs the occupied writer connection.
-		// A read outside its transaction would already have loaded stale data.
 		deadline := time.NewTimer(2 * time.Second)
 		defer deadline.Stop()
 		tick := time.NewTicker(time.Millisecond)
@@ -321,7 +316,7 @@ func TestProviderConfigurationPreservesConcurrentCollectionChanges(t *testing.T)
 				return errors.New("provider configuration did not wait for the host transaction")
 			}
 		}
-		return nil // Commit the host changes before configuration continues.
+		return nil
 	})
 	if started {
 		select {

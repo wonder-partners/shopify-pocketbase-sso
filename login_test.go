@@ -57,7 +57,6 @@ func TestShopifyLoginCreatesANewAccount(t *testing.T) {
 	if data := (&shopifyLogin{customer: testCustomer("camille@example.test", true)}).newAccountData(nil); data["email"] != "camille@example.test" {
 		t.Fatal("missing browser data did not get the Shopify email")
 	}
-	// PocketBase creates the account between both steps.
 	account := newAccount(t, app, accounts, "camille@example.test", true)
 	if err := login.finish(app, account.Id); err != nil {
 		t.Fatal(err)
@@ -70,12 +69,11 @@ func TestShopifyLoginCreatesANewAccount(t *testing.T) {
 func TestShopifyLoginResumesTheAccount(t *testing.T) {
 	for _, c := range []struct {
 		name     string
-		identity bool // the account has a Shopify identity
-		link     bool // the account has the matching OAuth link
+		identity bool
+		link     bool
 	}{
 		{"by Shopify identity", true, true},
 		{"by Shopify identity without OAuth link", true, false},
-		// An interrupted login committed the OAuth link but not the identity.
 		{"by exact OAuth link only", false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -200,7 +198,6 @@ func TestShopifyLoginSynchronizesTheAccount(t *testing.T) {
 			if after.Email() != c.shopifyEmail || after.Verified() != c.wantVerified {
 				t.Fatalf("account = %s verified=%v, want %s verified=%v", after.Email(), after.Verified(), c.shopifyEmail, c.wantVerified)
 			}
-			// Becoming verified revokes all OAuth links; only this login's comes back.
 			upgraded := !c.verified && c.wantVerified
 			if _, err := app.FindRecordById(core.CollectionNameExternalAuths, link.Id); err != nil {
 				t.Fatal("the login's own OAuth link was lost", err)
@@ -228,7 +225,6 @@ func TestShopifyLoginRefusesWhenTheOAuthLinkCannotBeRestored(t *testing.T) {
 	app.OnRecordCreate(core.CollectionNameExternalAuths).BindFunc(func(*core.RecordEvent) error {
 		return errors.New("storage unavailable")
 	})
-	// The auth transaction rolls the verification back with the refusal.
 	err := app.RunInTransaction(func(tx core.App) error {
 		_, err := startShopifyLogin(tx, accounts.Id, testCustomer("camille@example.test", true), nil)
 		return err

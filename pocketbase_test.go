@@ -65,7 +65,6 @@ func TestShopifyAndBuiltInAccountsUseTheSameAPIRules(t *testing.T) {
 	f.login()
 	storeToken, storeUser := f.authRecord()
 	native := nativeSignup(f, "native@example.test")
-	// A second unlinked account must not conflict with the Shopify identity index.
 	nativeSignup(f, "another-native@example.test")
 	storeDoc := createDocument(f, storeToken, storeUser.Id)
 	nativeID := native.Record["id"].(string)

@@ -84,7 +84,6 @@ func TestSetupPreservesUserSchemaIdentityAndNativeLinks(t *testing.T) {
 	}
 	linkID := link.Id
 	users, _ := f.app.FindCollectionByNameOrId("users")
-	// Even old field names now belong to the host, not to this integration.
 	users.Fields.Add(&core.TextField{Name: "shopify_sub"})
 	users.ViewRule = types.Pointer("id = @request.auth.id && shopify_sub != ''")
 	if err := f.app.Save(users); err != nil {
@@ -192,7 +191,6 @@ func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// A historical identity from a different issuer must stay untouched.
 			if err := saveIdentity(f.app, user.Id, "https://other.example.test/identity", "other-subject", "other-customer", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +220,6 @@ func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 			}
 			f.loginStore()
 			f.expect(f.completeCallback(f.authorize(false)), 409)
-			// A new email may create a new account, but cannot recover the old one.
 			f.mock.ProfileEmail = "new-account@example.test"
 			result := decodeAuth(t, f.login())
 			if result.Record["id"] == user.Id || result.Meta["isNew"] != true {
@@ -233,8 +230,6 @@ func TestShopifyUnlinkRemovesOnlyTheMatchingPrivateIdentity(t *testing.T) {
 }
 
 func TestShopifyUnlinkFailureKeepsBothIdentityLinks(t *testing.T) {
-	// Identity deletion failures and project rejections are covered directly by
-	// TestIdentityRevocationWithOAuthLink and TestRespondAfterCommit.
 	for _, stage := range []string{"native_delete", "stopped"} {
 		t.Run(stage, func(t *testing.T) {
 			f := setup(t, "")
@@ -268,7 +263,6 @@ func TestShopifyUnlinkFailureKeepsBothIdentityLinks(t *testing.T) {
 	}
 }
 
-// End-to-end: unlinking another provider through the API leaves Shopify alone.
 func TestShopifyUnlinkLeavesOtherProvidersUnchanged(t *testing.T) {
 	f := setup(t, "")
 	f.login()
@@ -291,8 +285,6 @@ func TestShopifyUnlinkLeavesOtherProvidersUnchanged(t *testing.T) {
 	}
 }
 
-// End-to-end: unlinking never depends on Shopify being reachable. A link
-// without its identity is covered by TestIdentityRevocationEdgeCases.
 func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
 	f := setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,8 +321,6 @@ func TestShopifyUnlinkWorksWhileDiscoveryIsUnavailable(t *testing.T) {
 }
 
 func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
-	// Identities without an OAuth link (older versions) are covered directly by
-	// TestIdentityRevocationOnVerification.
 	for _, action := range []string{"verification", "password_reset"} {
 		t.Run(action, func(t *testing.T) {
 			f := setup(t, "email")
@@ -364,8 +354,6 @@ func TestNativeAccountRecoveryRevokesShopifyIdentity(t *testing.T) {
 	}
 }
 
-// End-to-end through PocketBase's own OAuth link purge. The failure without an
-// OAuth link is covered directly by TestIdentityRevocationOnVerification.
 func TestNativeRecoveryRollsBackWhenShopifyRevocationFails(t *testing.T) {
 	f := setup(t, "email")
 	f.login()
@@ -390,8 +378,6 @@ func TestNativeRecoveryRollsBackWhenShopifyRevocationFails(t *testing.T) {
 	}
 }
 
-// A bare PocketBase app with the identity store and its revocation rules, but
-// no Shopify service, discovery or HTTP server.
 func identityStoreApp(t *testing.T) (core.App, *core.Collection) {
 	t.Helper()
 	app := committedResponseApp(t)
@@ -402,7 +388,6 @@ func identityStoreApp(t *testing.T) (core.App, *core.Collection) {
 	if err := ensureIdentityStore(app, accounts); err != nil {
 		t.Fatal(err)
 	}
-	// Setup is repeatable on an existing store.
 	if err := ensureIdentityStore(app, accounts); err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +452,6 @@ func TestIdentityStoreFindAndSave(t *testing.T) {
 	if other, err := findIdentity(app, otherIssuer, "42"); err != nil || other != nil {
 		t.Fatal("the same customer ID from another store matched", err)
 	}
-	// Saving again updates the same identity instead of adding one.
 	if err := saveIdentity(app, camille.Id, testIssuer, "42", "gid://shopify/Customer/43", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +477,6 @@ func TestIdentityStoreRestoresPreviousIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := privateIdentityOf(t, app, camille.Id).Id
-	// A security purge removes the identity during the same login.
 	if err := app.Delete(privateIdentityOf(t, app, camille.Id)); err != nil {
 		t.Fatal(err)
 	}
@@ -509,9 +492,9 @@ func TestIdentityRevocationWithOAuthLink(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		provider string
-		owner    string // "": the Shopify account; "members": an account of another auth collection
-		blocked  bool   // a host model hook stops the deletion
-		failure  bool   // deleting the identity fails
+		owner    string
+		blocked  bool
+		failure  bool
 		revoked  bool
 	}{
 		{"matching Shopify link", providerName, "", false, false, true},
@@ -569,11 +552,9 @@ func TestIdentityRevocationWithOAuthLink(t *testing.T) {
 func TestIdentityRevocationEdgeCases(t *testing.T) {
 	app, accounts := identityStoreApp(t)
 	camille := newAccount(t, app, accounts, "camille@example.test", true)
-	// An OAuth link whose identity is already missing still deletes cleanly.
 	if err := app.Delete(newOAuthLink(t, app, camille, providerName, oauthLinkProviderID(testIssuer, "42"))); err != nil {
 		t.Fatal(err)
 	}
-	// Deleting an account deletes its identities.
 	if err := saveIdentity(app, camille.Id, testIssuer, "42", "gid://shopify/Customer/42", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +570,7 @@ func TestIdentityRevocationOnVerification(t *testing.T) {
 	for _, c := range []struct {
 		name       string
 		identities bool
-		failure    bool // deleting an identity fails
+		failure    bool
 	}{
 		{"with identities", true, false},
 		{"without identities", false, false},

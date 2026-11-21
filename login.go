@@ -11,32 +11,20 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 )
 
-// The event store key carrying a started Shopify login to its second step.
 const shopifyLoginKey = "shopify_login"
 
-// verifiedCustomer is what Shopify verified about the customer of one login.
 type verifiedCustomer struct {
 	issuer, subject, customerID, email string
-	// Shopify confirmed that email belongs to the customer.
-	emailVerified bool
+	emailVerified                      bool
 }
 
-// shopifyLogin is a Shopify login between its two PocketBase steps: it is
-// authorized before PocketBase creates or loads the account, and finished once
-// the account exists.
 type shopifyLogin struct {
 	customer verifiedCustomer
 	existing *core.Record
 	previous *shopifyIdentity
-	service  *Service // the Service whose hooks started this login
+	service  *Service
 }
 
-// startShopifyLogin decides which account a verified customer enters, inside
-// the auth transaction. Only the customer's Shopify identity, or the exact
-// OAuth link of an interrupted login, can select an existing account: never an
-// email match, nor the account PocketBase proposes (by email or by the current
-// session). A resumed account gets the Shopify email and verification state.
-// Refusals are HTTP errors: 403 for conflicting links, 409 for other accounts.
 func startShopifyLogin(app core.App, accounts string, customer verifiedCustomer, proposed *core.Record) (*shopifyLogin, error) {
 	identity, err := findIdentity(app, customer.issuer, customer.subject)
 	if err != nil {
@@ -49,8 +37,6 @@ func startShopifyLogin(app core.App, accounts string, customer verifiedCustomer,
 			return nil, err
 		}
 	}
-	// A previous login may have committed its OAuth link before an interruption
-	// prevented saving the identity. Recover only from that exact link.
 	link, err := app.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"collectionRef": accounts, "provider": providerName,
 		"providerId": oauthLinkProviderID(customer.issuer, customer.subject),
@@ -100,11 +86,8 @@ func startShopifyLogin(app core.App, accounts string, customer verifiedCustomer,
 	return login, nil
 }
 
-// account is the existing account this login resumes, or nil for a new account.
 func (l *shopifyLogin) account() *core.Record { return l.existing }
 
-// newAccountData completes the browser's data for a new account: the email
-// comes from Shopify, and the browser cannot choose a password or verification.
 func (l *shopifyLogin) newAccountData(data map[string]any) map[string]any {
 	if data == nil {
 		data = map[string]any{}
@@ -116,16 +99,10 @@ func (l *shopifyLogin) newAccountData(data map[string]any) map[string]any {
 	return data
 }
 
-// finish saves the Shopify identity once account exists, restoring this
-// login's own identity if a security purge removed it during the login.
 func (l *shopifyLogin) finish(app core.App, account string) error {
 	return saveIdentity(app, account, l.customer.issuer, l.customer.subject, l.customer.customerID, l.previous)
 }
 
-// The two PocketBase steps of a Shopify login only translate between
-// PocketBase events and the Shopify login above.
-
-// startLoginHook runs before PocketBase loads or creates the account.
 func (s *Service) startLoginHook(e *core.RecordAuthWithOAuth2RequestEvent) error {
 	if e.ProviderName != providerName {
 		return e.Next()
@@ -134,8 +111,6 @@ func (s *Service) startLoginHook(e *core.RecordAuthWithOAuth2RequestEvent) error
 	if !ok || p.service != s || p.token == nil {
 		return e.ForbiddenError("Missing verified Shopify identity.", nil)
 	}
-	// Native OAuth proposes e.Record by verified email or current auth header.
-	// The Shopify login only accepts it when it is the customer's own account.
 	login, err := startShopifyLogin(e.App, s.collectionID, p.customer, e.Record)
 	if err != nil {
 		return err
@@ -150,7 +125,6 @@ func (s *Service) startLoginHook(e *core.RecordAuthWithOAuth2RequestEvent) error
 	return e.Next()
 }
 
-// finishLoginHook runs once PocketBase has the account of a started login.
 func (s *Service) finishLoginHook(e *core.RecordAuthRequestEvent) error {
 	login, ok := e.Get(shopifyLoginKey).(*shopifyLogin)
 	if ok && login.service == s && e.AuthMethod == core.MFAMethodOAuth2 {

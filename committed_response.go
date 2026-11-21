@@ -9,32 +9,11 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// commitRules are the only differences between the Shopify requests that use
-// respondAfterCommit. The zero value suits a request that must write its
-// response inside the transaction and has no multi-factor exception.
 type commitRules struct {
-	// A native MFA challenge (ErrMFA with a written 401) accepts the Shopify
-	// factor: its changes commit so that the second factor can use them.
-	acceptMFAChallenge bool
-	// PocketBase writes the response itself from a transaction completion
-	// callback (native record deletion writes its 204 that way). The response
-	// may therefore be missing inside the transaction and stays buffered until
-	// the outermost transaction has completed.
+	acceptMFAChallenge        bool
 	responseWrittenOnComplete bool
 }
 
-// respondAfterCommit runs one Shopify request inside a database transaction and
-// sends its response only once the matching outcome is final:
-//
-//   - the response is buffered while run executes;
-//   - an error, or a written HTTP error response, rolls the changes back;
-//   - the buffered response is sent after the commit, or after a rollback
-//     caused by its own written HTTP error, never after any other failure;
-//   - inside a host transaction, delivery waits for that transaction to
-//     complete, and a written HTTP error is returned so the host rolls back.
-//
-// run receives the transactional app, which is also e.App while it runs. The
-// event's App and Response are restored when the response is final.
 func respondAfterCommit(e *core.RequestEvent, rules commitRules, run func(tx core.App) error) error {
 	original, originalApp := e.Response, e.App
 	captured := &authResponseBuffer{header: original.Header().Clone()}
@@ -51,16 +30,13 @@ func respondAfterCommit(e *core.RequestEvent, rules commitRules, run func(tx cor
 	err := originalApp.RunInTransaction(func(tx core.App) error {
 		e.App = tx
 		runErr := run(tx)
-		// Exact equality prevents a joined MFA + policy error from committing.
-		if rules.acceptMFAChallenge && runErr == apis.ErrMFA && captured.status == http.StatusUnauthorized {
+		if rules.acceptMFAChallenge && isPureMFAChallenge(runErr, captured.status) {
 			mfaAccepted = true
 			return nil
 		}
 		if runErr != nil {
 			return runErr
 		}
-		// A hook can stop the chain with nil without producing a response.
-		// Reject it before commit so the resulting HTTP 500 leaves no changes.
 		if !rules.responseWrittenOnComplete && !captured.Written() {
 			return incompleteResponse(e)
 		}
@@ -80,8 +56,6 @@ func respondAfterCommit(e *core.RequestEvent, rules commitRules, run func(tx cor
 		}
 	}
 	if outer := originalApp.TxInfo(); outer != nil {
-		// The nested transaction has not committed yet. Keep a late native
-		// response attached to the buffer until the host transaction completes.
 		keepCaptured = rules.responseWrittenOnComplete
 		outer.OnComplete(func(txErr error) error {
 			if keepCaptured {
@@ -92,8 +66,6 @@ func respondAfterCommit(e *core.RequestEvent, rules commitRules, run func(tx cor
 			}
 			return nil
 		})
-		// A written rejection must reach the host so it rolls back too. ErrMFA
-		// is not returned: it would roll back the accepted first factor.
 		return err
 	}
 	if err != nil && err != rejected {
@@ -107,6 +79,10 @@ func respondAfterCommit(e *core.RequestEvent, rules commitRules, run func(tx cor
 		return apis.ErrMFA
 	}
 	return writeErr
+}
+
+func isPureMFAChallenge(err error, status int) bool {
+	return err == apis.ErrMFA && status == http.StatusUnauthorized
 }
 
 func incompleteResponse(e *core.RequestEvent) error {

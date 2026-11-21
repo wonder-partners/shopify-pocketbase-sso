@@ -44,7 +44,6 @@ func TestConfiguredAuthCollection(t *testing.T) {
 			}
 			f.expect(f.request("GET", f.api.URL+"/api/collections/members/records/"+user.Id, "", "", first.Token), 200)
 			f.expect(f.request("POST", f.api.URL+"/api/collections/members/auth-refresh", "", "", first.Token), 200)
-			// Changing the profile still finds the same identity in the selected collection.
 			f.mock.ProfileEmail = "changed@example.test"
 			second := decodeAuth(t, f.login())
 			if second.Record["id"] != user.Id || second.Record["email"] != f.mock.ProfileEmail || second.Meta["isNew"] != false {
@@ -112,7 +111,6 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 }
 
 func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
-	// A leftover setting from the prototype must not redirect authentication.
 	t.Setenv("STUDIO_AUTH_COLLECTION", "members")
 	f := setup(t, "")
 	members := core.NewAuthCollection("members")
@@ -187,9 +185,6 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	}
 }
 
-// End-to-end through PocketBase's own verification purge and session rotation.
-// The same-email variant and a failed link restore are covered directly by
-// TestShopifyLoginSynchronizesTheAccount and its link-restore refusal test.
 func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
 	f := setup(t, "email")
 	first := decodeAuth(t, f.login())
@@ -205,7 +200,6 @@ func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerID := link.ProviderId()
-	// Verification must still revoke other pre-existing OAuth links.
 	other := core.NewExternalAuth(f.app)
 	other.SetCollectionRef(user.Collection().Id)
 	other.SetRecordRef(user.Id)
@@ -300,7 +294,6 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	data := callbackData(t, page.body)
 	body := nativeOAuthBody(t, data)
 	f.expect(f.request("POST", endpoint, "https://evil.example", body, ""), 403)
-	// Knowing the correct verifier is sufficient; there is no OAuth cookie.
 	f.client.Jar, _ = cookiejar.New(nil)
 	data["redirectURL"] = "https://evil.example/callback"
 	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 400)
@@ -314,8 +307,6 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 }
 
 func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
-	// Expired codes and wrong verifiers are refused by the store; see
-	// TestStoreRejectsInvalidLogins. Malformed verifiers never reach it.
 	for _, fault := range []string{"missing", "short", "long", "characters"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "")
@@ -366,8 +357,6 @@ func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 	q := u.Query()
 	q.Set("nonce", "a-different-authorization-request")
 	u.RawQuery = q.Encode()
-	// Shopify accepts the code and the matching verifier, but our provider
-	// rejects the signed ID token because its nonce is from a different flow.
 	a := f.request("GET", u.String(), "", "", "")
 	f.expect(a, 302)
 	f.expect(f.completeCallback(a.location), 401)
@@ -431,7 +420,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 }
 
 func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T) {
-	f := setup(t, "email") // The verified claim does not match the profile email.
+	f := setup(t, "email")
 	f.loginStore()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
