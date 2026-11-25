@@ -43,6 +43,8 @@ Leave the other settings at their defaults and release this initial version.
 
 Open **App settings > Credentials** and save the **Client ID**. No client secret or Admin API token is needed.
 
+Then open **Settings > IP allowlist** and configure an [IP allowlist](https://shopify.dev/docs/apps/build/dev-dashboard/ip-allowlist) (your PocketBase server's static IP address or CIDR range, or your hosting provider's ASN with country restrictions). IP allowlists are managed in the Dev Dashboard rather than `shopify.app.toml`. Although this library uses only the Customer Account API and never calls the Admin API, Shopify requires an IP allowlist for new apps and custom installations on external stores, and blocks new app creation across an organization if existing apps do not have one. Leave **Bulk operations** disabled.
+
 ## 3. Configure and install the Shopify app
 
 Keep the Shopify app configuration in the same repository as the PocketBase application that uses this library, ideally in a dedicated subfolder. Commit the generated `shopify.app.toml` so that Shopify URLs and permissions are versioned alongside the application code. Its `client_id` is public and can be committed.
