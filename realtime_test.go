@@ -16,12 +16,12 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			f := setup(t, "")
 			documentsCollection(f)
 			f.login()
-			shopToken, shop := f.authRecord()
+			storeToken, store := f.authRecord()
 			native := nativeSignup(f, "realtime-native@example.test")
 			nativeID := native.Record["id"].(string)
-			token, own, otherToken, other := shopToken, shop.Id, native.Token, nativeID
+			token, own, otherToken, other := storeToken, store.Id, native.Token, nativeID
 			if method == "password" {
-				token, own, otherToken, other = native.Token, nativeID, shopToken, shop.Id
+				token, own, otherToken, other = native.Token, nativeID, storeToken, store.Id
 			}
 			ownDoc := createDocument(f, token, own)
 			otherDoc := createDocument(f, otherToken, other)
@@ -57,11 +57,11 @@ func TestNativeRealtimeUsesTheSameOwnerRules(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("realtime connect timed out")
 			}
-			account := privateAccount(f, shop.Id)
-			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyIdentities/*","_shopifyIdentities/` + account.Id + `"]}`
+			identity := privateIdentity(f, store.Id)
+			body := `{"clientId":"` + connect.ClientID + `","subscriptions":["documents/*","_shopifyIdentities/*","_shopifyIdentities/` + identity.Id + `"]}`
 			f.expect(f.request("POST", f.api.URL+"/api/realtime", "", body, token), 204)
-			account.Set("customerId", "gid://shopify/Customer/67890")
-			if err := f.app.Save(account); err != nil {
+			identity.Set("customerId", "gid://shopify/Customer/67890")
+			if err := f.app.Save(identity); err != nil {
 				t.Fatal(err)
 			}
 			f.expect(f.request("PATCH", f.api.URL+"/api/collections/documents/records/"+otherDoc, "", `{"title":"Other user update"}`, otherToken), 200)

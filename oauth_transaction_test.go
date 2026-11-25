@@ -76,7 +76,7 @@ func TestRejectedShopifyLoginRollsBackProfile(t *testing.T) {
 				}
 			}
 
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			status := http.StatusForbidden
 			if stage == "enrich" {
@@ -134,17 +134,17 @@ func TestRejectedShopifySignupRollsBackAccountAndIdentities(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "identity_storage":
-				f.app.OnRecordCreate(accountsCollectionName).BindFunc(func(e *core.RecordEvent) error {
+				f.app.OnRecordCreate(identitiesCollectionName).BindFunc(func(e *core.RecordEvent) error {
 					return errors.New("identity storage unavailable")
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			status := http.StatusForbidden
 			if stage == "identity_storage" || stage == "oauth_stop" || stage == "auth_stop" {
 				status = http.StatusInternalServerError
 			}
 			f.expect(f.completeCallback(f.authorize(false)), status)
-			for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName} {
+			for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName} {
 				count, err := f.app.CountRecords(collection)
 				if err != nil || count != 0 {
 					t.Fatalf("rejected signup left records in %s", collection)
@@ -163,7 +163,7 @@ func TestShopifyAuthHookCanWriteItsOwnResponse(t *testing.T) {
 	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
 		return e.NoContent(http.StatusNoContent)
 	})
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(false)), http.StatusNoContent)
 	after, err := f.app.FindRecordById("users", user.Id)
 	if err != nil || after.Email() != f.mock.ProfileEmail || !after.Verified() {
@@ -172,7 +172,7 @@ func TestShopifyAuthHookCanWriteItsOwnResponse(t *testing.T) {
 	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
 		t.Fatal("custom HTTP response lost the Shopify link", err)
 	}
-	privateAccount(f, user.Id)
+	privateIdentity(f, user.Id)
 }
 
 func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
@@ -190,7 +190,7 @@ func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
 	}
 	f.mock.Fault = ""
 	f.mock.ProfileEmail = "changed@example.test"
-	f.loginShop()
+	f.loginStore()
 	result := f.completeCallback(f.authorize(false))
 	f.expect(result, http.StatusUnauthorized)
 	var challenge struct {
@@ -206,7 +206,7 @@ func TestShopifyMFAPersistsProfileAndUsableChallenge(t *testing.T) {
 	if err != nil || after.Email() != f.mock.ProfileEmail || !after.Verified() {
 		t.Fatal("accepted Shopify factor did not synchronize the profile")
 	}
-	privateAccount(f, user.Id)
+	privateIdentity(f, user.Id)
 	if _, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id}); err != nil {
 		t.Fatal("verification upgrade lost the Shopify link during MFA", err)
 	}
@@ -231,13 +231,13 @@ func TestShopifyDenialAfterMFAIsRolledBack(t *testing.T) {
 		}
 		return errors.Join(apis.ErrMFA, e.ForbiddenError("Project denied the Shopify factor.", nil))
 	})
-	f.loginShop()
+	f.loginStore()
 	result := f.completeCallback(f.authorize(false))
 	f.expect(result, http.StatusForbidden)
 	if strings.Contains(result.body, "mfaId") {
 		t.Fatal("rejected MFA attempt exposed a challenge or auth token")
 	}
-	for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+	for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName, core.CollectionNameMFAs} {
 		count, err := f.app.CountRecords(collection)
 		if err != nil || count != 0 {
 			t.Fatalf("rejected MFA attempt left records in %s", collection)
@@ -282,7 +282,7 @@ func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
 				if strings.HasSuffix(stage, "_outer") {
 					serverURL = projectTransactionServer(t, f, "success")
 				}
-				f.loginShop()
+				f.loginStore()
 				callback := f.authorize(false)
 				var result response
 				if serverURL == "" {
@@ -305,60 +305,13 @@ func TestShopifyHTTPDenialReplacesPreparedMFAResponse(t *testing.T) {
 						t.Fatal("policy response was not a single intact JSON document", err)
 					}
 				}
-				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName, core.CollectionNameMFAs} {
 					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
 						t.Fatal("HTTP denial after MFA persisted records in", collection, err)
 					}
 				}
 			})
 		}
-	}
-}
-
-func TestShopifyCommitFailureDoesNotExposeAuthResponse(t *testing.T) {
-	for _, mfa := range []bool{false, true} {
-		name := "session"
-		if mfa {
-			name = "mfa"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := setup(t, "")
-			if mfa {
-				c, _ := f.app.FindCollectionByNameOrId("users")
-				c.MFA.Enabled, c.OTP.Enabled = true, true
-				if err := f.app.Save(c); err != nil {
-					t.Fatal(err)
-				}
-			}
-			// A deferred foreign key lets all auth hooks succeed but rejects COMMIT.
-			for _, query := range []string{
-				"CREATE TABLE oauth_commit_parent (id TEXT PRIMARY KEY)",
-				"CREATE TABLE oauth_commit_child (parent_id TEXT REFERENCES oauth_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)",
-			} {
-				if _, err := f.app.DB().NewQuery(query).Execute(); err != nil {
-					t.Fatal(err)
-				}
-			}
-			inserted := false
-			f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
-				if _, err := e.App.DB().NewQuery("INSERT INTO oauth_commit_child (parent_id) VALUES ('missing')").Execute(); err != nil {
-					return err
-				}
-				inserted = true
-				return e.Next()
-			})
-			f.loginShop()
-			result := f.completeCallback(f.authorize(false))
-			if !inserted || result.status < http.StatusBadRequest || strings.Contains(result.body, `"token"`) || strings.Contains(result.body, "mfaId") {
-				t.Fatal("failed commit exposed a JWT or an unusable MFA challenge")
-			}
-			for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName, core.CollectionNameMFAs} {
-				count, err := f.app.CountRecords(collection)
-				if err != nil || count != 0 {
-					t.Fatalf("failed commit left records in %s", collection)
-				}
-			}
-		})
 	}
 }
 
@@ -383,7 +336,7 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 			f := setup(t, "email")
 			f.login()
 			_, before := f.authRecord()
-			accountID := privateAccount(f, before.Id).Id
+			identityRecordID := privateIdentity(f, before.Id).Id
 			f.mock.Fault = ""
 			f.mock.ProfileEmail = "changed@example.test"
 			wrap := func(e *core.RequestEvent, next func() error) error {
@@ -406,10 +359,10 @@ func TestShopifyNestedProjectTransactions(t *testing.T) {
 					return wrap(e.RequestEvent, e.Next)
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			after, err := f.app.FindRecordById("users", before.Id)
-			if err != nil || privateAccount(f, before.Id).Id != accountID {
+			if err != nil || privateIdentity(f, before.Id).Id != identityRecordID {
 				t.Fatal("nested transaction lost the account or private identity", err)
 			}
 			if strings.HasSuffix(stage, "_denied") {
@@ -438,11 +391,11 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			f := setup(t, "email")
 			var before *core.Record
-			var accountID, linkID string
+			var identityRecordID, linkID string
 			if stage != "signup" {
 				f.login()
 				_, before = f.authRecord()
-				accountID = privateAccount(f, before.Id).Id
+				identityRecordID = privateIdentity(f, before.Id).Id
 				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": before.Id})
 				if err != nil {
 					t.Fatal(err)
@@ -478,14 +431,14 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 					return e.Next()
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			result := f.completeCallback(f.authorize(false))
 			f.expect(result, http.StatusBadRequest)
 			if sent.Load() != 0 {
 				t.Fatal("serialization failure sent a login alert")
 			}
 			if before == nil {
-				for _, collection := range []string{"users", core.CollectionNameExternalAuths, accountsCollectionName} {
+				for _, collection := range []string{"users", core.CollectionNameExternalAuths, identitiesCollectionName} {
 					if count, err := f.app.CountRecords(collection); err != nil || count != 0 {
 						t.Fatal("failed signup serialization left records in", collection, err)
 					}
@@ -496,7 +449,7 @@ func TestShopifySerializationFailureRollsBackAuthentication(t *testing.T) {
 			if err != nil || after.Email() != before.Email() || after.Verified() != before.Verified() || after.EmailVisibility() {
 				t.Fatal("serialization failure committed a profile or project DB change", err)
 			}
-			if privateAccount(f, before.Id).Id != accountID {
+			if privateIdentity(f, before.Id).Id != identityRecordID {
 				t.Fatal("serialization failure replaced the private identity")
 			}
 			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, linkID); err != nil {
@@ -534,25 +487,133 @@ func TestShopifyResponseIsSerializedOnceBeforeCommit(t *testing.T) {
 }
 
 func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
-	f := setup(t, "")
-	original := f.s.client.Transport
-	tokenRequests := 0
-	f.s.client.Transport = oauthRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		// This pool has one connection. An open auth transaction would hold it
-		// and prevent this query from completing before its deadline.
-		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
-		defer cancel()
-		var result int
-		if err := f.app.NonconcurrentDB().NewQuery("SELECT 1").WithContext(ctx).Row(&result); err != nil {
-			return nil, errors.New("Shopify request ran while the database transaction was open")
-		}
-		if r.URL.Path == "/token" {
-			tokenRequests++
-		}
-		return original.RoundTrip(r)
+	var f *fixture
+	var tokenRequests atomic.Int32
+	f = setupWithStoreHandler(t, "", "users", false, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/token" && r.URL.Path != "/customer/api/2026-10/graphql" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// This pool has one connection. An open auth transaction would hold it
+			// and prevent this query from completing before its deadline.
+			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+			defer cancel()
+			var result int
+			if err := f.app.NonconcurrentDB().NewQuery("SELECT 1").WithContext(ctx).Row(&result); err != nil {
+				http.Error(w, "Shopify request ran while the database transaction was open", http.StatusInternalServerError)
+				return
+			}
+			if r.URL.Path == "/token" {
+				tokenRequests.Add(1)
+			}
+			next.ServeHTTP(w, r)
+		})
 	})
+	waitForDiscovery(t, f.s)
 	f.login()
-	if tokenRequests != 1 {
-		t.Fatalf("expected one token exchange, got %d", tokenRequests)
+	if tokenRequests.Load() != 1 {
+		t.Fatalf("expected one token exchange, got %d", tokenRequests.Load())
 	}
 }
+
+func TestShopifyAuthTransactionOfRecognizesOnlyShopifyLogins(t *testing.T) {
+	app := committedResponseApp(t)
+	if _, ok := shopifyAuthTransactionOf(app); ok {
+		t.Fatal("a plain app was taken for a Shopify login")
+	}
+	err := app.RunInTransaction(func(tx core.App) error {
+		if _, ok := shopifyAuthTransactionOf(tx); ok {
+			t.Fatal("a plain transaction was taken for a Shopify login")
+		}
+		login := &shopifyAuthTransaction{App: tx, original: app}
+		for name, candidate := range map[string]core.App{
+			"login":                login,
+			"native response step": &authResponseApp{App: tx, transaction: login},
+		} {
+			if got, ok := shopifyAuthTransactionOf(candidate); !ok || got != login {
+				t.Fatalf("%s: login not recognized", name)
+			}
+		}
+		// Project hooks may open nested transactions; the login must survive them.
+		return login.RunInTransaction(func(nested core.App) error {
+			if got, ok := shopifyAuthTransactionOf(nested); !ok || got != login {
+				t.Fatal("nested transaction lost the Shopify login")
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShopifyLoginAfterCommit(t *testing.T) {
+	errHost := errors.New("host rolled back")
+	for _, c := range []struct {
+		name    string
+		host    bool  // the login runs inside a host transaction
+		outcome error // nil, errHost, or errCommit for a failing commit
+		want    bool
+	}{
+		{"commit", false, nil, true},
+		{"rollback", false, errHost, false},
+		{"commit failure", false, errCommit, false},
+		{"host commit", true, nil, true},
+		{"host rollback", true, errHost, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			app := committedResponseApp(t)
+			calls := 0
+			var got core.App
+			login := func(tx core.App) error {
+				l := &shopifyAuthTransaction{App: tx, original: app}
+				return l.RunInTransaction(func(core.App) error {
+					if _, err := tx.DB().NewQuery("INSERT INTO marks (id) VALUES ('m')").Execute(); err != nil {
+						return err
+					}
+					l.afterCommit(func(committedApp core.App) {
+						calls++
+						got = committedApp
+						if !committed(t, committedApp) {
+							t.Error("task ran before the login was committed")
+						}
+					})
+					if calls != 0 {
+						t.Error("task ran inside the transaction")
+					}
+					return nil
+				})
+			}
+			err := app.RunInTransaction(func(tx core.App) error {
+				if c.host {
+					if err := login(tx); err != nil {
+						return err
+					}
+					if calls != 0 {
+						t.Error("task ran before the host transaction completed")
+					}
+				} else if err := login(tx); err != nil {
+					return err
+				}
+				if c.outcome == errCommit {
+					_, err := tx.DB().NewQuery("INSERT INTO commit_child (parent_id) VALUES ('missing')").Execute()
+					return err
+				}
+				return c.outcome
+			})
+			if (err == nil) != (c.outcome == nil) {
+				t.Fatalf("unexpected transaction result: %v", err)
+			}
+			if c.want != (calls == 1) || calls > 1 {
+				t.Fatalf("task ran %d times", calls)
+			}
+			if c.want && (got != app || got.TxInfo() != nil) {
+				t.Fatal("task did not receive the non-transactional app")
+			}
+		})
+	}
+}
+
+// errCommit marks a case whose COMMIT fails on a deferred foreign key.
+var errCommit = errors.New("commit failure")

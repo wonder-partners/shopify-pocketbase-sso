@@ -156,7 +156,7 @@ func main() {
     app := pocketbase.New()
     app.OnServe().BindFunc(func(e *core.ServeEvent) error {
         sso, err := shopifysso.New(context.Background(), app, shopifysso.Config{
-            ShopURL:        os.Getenv("SHOPIFY_STORE_URL"),
+            StoreURL:       os.Getenv("SHOPIFY_STORE_URL"),
             RedirectURL:    os.Getenv("SHOPIFY_CUSTOMER_CALLBACK_URL"),
             ClientID:       os.Getenv("SHOPIFY_APP_CLIENT_ID"),
             AuthCollection: "users",

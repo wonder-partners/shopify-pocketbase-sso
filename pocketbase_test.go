@@ -63,16 +63,16 @@ func TestShopifyAndBuiltInAccountsUseTheSameAPIRules(t *testing.T) {
 	f := setup(t, "")
 	documentsCollection(f)
 	f.login()
-	shopToken, shopUser := f.authRecord()
+	storeToken, storeUser := f.authRecord()
 	native := nativeSignup(f, "native@example.test")
 	// A second unlinked account must not conflict with the Shopify identity index.
 	nativeSignup(f, "another-native@example.test")
-	shopDoc := createDocument(f, shopToken, shopUser.Id)
+	storeDoc := createDocument(f, storeToken, storeUser.Id)
 	nativeID := native.Record["id"].(string)
 	nativeDoc := createDocument(f, native.Token, nativeID)
 	for _, tc := range []struct{ name, token, ownID, ownDoc, otherDoc, otherID string }{
-		{"shopify", shopToken, shopUser.Id, shopDoc, nativeDoc, nativeID},
-		{"password", native.Token, nativeID, nativeDoc, shopDoc, shopUser.Id},
+		{"shopify", storeToken, storeUser.Id, storeDoc, nativeDoc, nativeID},
+		{"password", native.Token, nativeID, nativeDoc, storeDoc, storeUser.Id},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			who := f.request("GET", f.api.URL+"/native/whoami", "", "", tc.token)
@@ -104,7 +104,7 @@ func TestShopifyAndBuiltInAccountsUseTheSameAPIRules(t *testing.T) {
 			}
 		})
 	}
-	f.expect(f.request("GET", f.api.URL+"/api/collections/documents/records/"+shopDoc, "", "", ""), 404)
+	f.expect(f.request("GET", f.api.URL+"/api/collections/documents/records/"+storeDoc, "", "", ""), 404)
 	f.expect(f.request("GET", f.api.URL+"/native/whoami", "", "", ""), 401)
 }
 
@@ -121,7 +121,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 			}
 			return e.ForbiddenError("Blocked by application auth hook.", nil)
 		})
-		f.loginShop()
+		f.loginStore()
 		r := f.completeCallback(f.authorize(true))
 		f.expect(r, 403)
 		if called != 1 || strings.Contains(r.body, `"token"`) {
@@ -134,7 +134,7 @@ func TestNativeAuthHooksAndAuthRuleAreNotBypassed(t *testing.T) {
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(true)), 403)
 }
 
@@ -152,7 +152,7 @@ func TestNativeMFAIsRequiredBeforeIssuingAShopifySession(t *testing.T) {
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	f.loginShop()
+	f.loginStore()
 	r := f.completeCallback(f.authorize(true))
 	f.expect(r, 401)
 	var challenge struct {
@@ -175,7 +175,7 @@ func TestCreateRuleCanDisableShopifySignup(t *testing.T) {
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(true)), 403)
 	count, err := f.app.CountRecords("users")
 	if err != nil || count != 0 {
@@ -205,10 +205,10 @@ func TestExistingAuthCollectionPoliciesArePreserved(t *testing.T) {
 func TestShopifyDoesNotClaimAnExistingPasswordAccountByEmail(t *testing.T) {
 	f := setup(t, "")
 	native := nativeSignup(f, "camille@example.test")
-	f.loginShop()
+	f.loginStore()
 	f.expect(f.completeCallback(f.authorize(true)), 409)
 	r, err := f.app.FindRecordById("users", native.Record["id"].(string))
-	count, countErr := f.app.CountRecords(accountsCollectionName)
+	count, countErr := f.app.CountRecords(identitiesCollectionName)
 	if err != nil || r.Email() != "camille@example.test" || countErr != nil || count != 0 {
 		t.Fatal("password account was silently linked by email")
 	}

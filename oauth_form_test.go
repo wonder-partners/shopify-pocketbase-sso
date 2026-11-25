@@ -15,7 +15,7 @@ func TestShopifyOAuthFormRequests(t *testing.T) {
 		for _, fault := range []string{"", "origin", "pkce"} {
 			t.Run(format+"/"+fault, func(t *testing.T) {
 				f := setup(t, "")
-				f.loginShop()
+				f.loginStore()
 				data := callbackData(t, f.callback(f.authorize(false)).body)
 				delete(data, "collection")
 				if fault == "pkce" {

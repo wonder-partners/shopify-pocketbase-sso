@@ -21,7 +21,7 @@ func TestShopifyAuthMethodsApplyFieldsAfterEndpointRewrite(t *testing.T) {
 				if state == "ready" {
 					f = setup(t, "")
 				} else {
-					f = setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+					f = setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, "discovery unavailable", http.StatusServiceUnavailable)
 						})
@@ -70,7 +70,7 @@ func TestShopifyAuthMethodsApplyFieldsAfterEndpointRewrite(t *testing.T) {
 					t.Fatal(err)
 				}
 				verifier, _ := p["codeVerifier"].(string)
-				if !strings.HasPrefix(authURL, f.s.oauth.Endpoint.AuthURL+"?") || u.Query().Get("state") != p["state"] || verifier == "" || u.Query().Get("redirect_uri") != f.s.cfg.RedirectURL {
+				if !strings.HasPrefix(authURL, f.s.store.authURL()+"?") || u.Query().Get("state") != p["state"] || verifier == "" || u.Query().Get("redirect_uri") != f.s.cfg.RedirectURL {
 					t.Fatal("projected authorization URL lost its endpoint or native parameters")
 				}
 			})
@@ -93,7 +93,7 @@ func TestShopifyAuthMethodsRewriteBeforeNativeGzip(t *testing.T) {
 			t.Run(order+"/"+mode, func(t *testing.T) {
 				var f *fixture
 				if mode == "pending" {
-					f = setupWithShopHandler(t, "", "users", false, func(http.Handler) http.Handler {
+					f = setupWithStoreHandler(t, "", "users", false, func(http.Handler) http.Handler {
 						return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, "discovery unavailable", http.StatusServiceUnavailable)
 						})
@@ -177,7 +177,7 @@ func TestShopifyAuthMethodsRewriteBeforeNativeGzip(t *testing.T) {
 						t.Fatal("gzip response lost the Shopify provider")
 					}
 					p := methods.OAuth2.Providers[0]
-					if !strings.HasPrefix(p.AuthURL, f.s.oauth.Endpoint.AuthURL+"?") || p.State == "" || p.CodeVerifier == "" {
+					if !strings.HasPrefix(p.AuthURL, f.s.store.authURL()+"?") || p.State == "" || p.CodeVerifier == "" {
 						t.Fatal("gzip response lost the rewritten URL or native parameters")
 					}
 					if mode == "fields" && p.Name != "" {

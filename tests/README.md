@@ -12,7 +12,7 @@ This installs the Go dependencies and the JavaScript SDK pinned in `sdk/package-
 
 - Root-level `*_test.go` files cover OAuth/OIDC, private identities, and PocketBase's rules, hooks, MFA and realtime events.
 - `tests/sdk/oauth.test.mjs` checks the OAuth flow with the official JavaScript SDK.
-- `internal/mockshop` simulates Shopify's discovery, OAuth, JWKS and GraphQL endpoints locally.
+- `internal/mockstore` simulates Shopify's discovery, OAuth, JWKS and GraphQL endpoints locally.
 
 ## OAuth test with the official SDK
 

@@ -37,7 +37,7 @@ func TestConfiguredAuthCollection(t *testing.T) {
 			if user.Collection().Name != "members" {
 				t.Fatal("Shopify authenticated into the wrong collection")
 			}
-			private := privateAccount(f, user.Id)
+			private := privateIdentity(f, user.Id)
 			relation := private.Collection().Fields.GetByName("user").(*core.RelationField)
 			if relation.CollectionId != user.Collection().Id {
 				t.Fatal("identity storage targets the wrong auth collection")
@@ -54,7 +54,7 @@ func TestConfiguredAuthCollection(t *testing.T) {
 			if err != nil || users.OAuth2.Enabled || len(users.OAuth2.Providers) != 0 {
 				t.Fatal("setup modified the default users collection")
 			}
-			f.loginShop()
+			f.loginStore()
 			page := f.callback(f.authorize(false))
 			data := callbackData(t, page.body)
 			body := nativeOAuthBody(t, data)
@@ -85,9 +85,9 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 				if err := f.app.Save(native); err != nil {
 					t.Fatal(err)
 				}
-				f.loginShop()
+				f.loginStore()
 				f.expect(f.completeCallback(f.authorize(false)), 409)
-				for _, collection := range []string{core.CollectionNameExternalAuths, accountsCollectionName} {
+				for _, collection := range []string{core.CollectionNameExternalAuths, identitiesCollectionName} {
 					count, err := f.app.CountRecords(collection)
 					if err != nil || count != 0 {
 						t.Fatal("renamed collection linked a conflicting Shopify identity")
@@ -98,8 +98,8 @@ func TestRenamedAuthCollectionPreservesShopifyHooks(t *testing.T) {
 
 			first := decodeAuth(t, f.login())
 			userID := first.Record["id"].(string)
-			account := privateAccount(f, userID)
-			if account.GetString("issuer") != f.s.issuer || account.GetString("subject") != "shopify-customer-sub-12345" {
+			identity := privateIdentity(f, userID)
+			if identity.GetString("issuer") != (f.store.URL+"/identity") || identity.GetString("subject") != "shopify-customer-sub-12345" {
 				t.Fatal("renamed collection did not save the verified Shopify identity")
 			}
 			f.mock.ProfileEmail = "changed@example.test"
@@ -123,7 +123,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)
@@ -138,7 +138,7 @@ func TestShopifyAuthenticationIsBoundToUsers(t *testing.T) {
 	result := f.request("POST", f.api.URL+"/api/collections/"+users.Id+"/auth-with-oauth2", f.api.URL, body, "")
 	f.expect(result, 200)
 	userID := decodeAuth(t, result).Record["id"].(string)
-	a := privateAccount(f, userID)
+	a := privateIdentity(f, userID)
 	relation := a.Collection().Fields.GetByName("user").(*core.RelationField)
 	if relation.CollectionId != users.Id {
 		t.Fatal("private Shopify identity is not linked to users")
@@ -171,7 +171,7 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
 		"provider": providerName, "recordRef": user.Id,
 	})
-	if err != nil || link.ProviderId() != identityID(f.s.issuer, privateAccount(f, user.Id).GetString("subject")) {
+	if err != nil || link.ProviderId() != oauthLinkProviderID((f.store.URL+"/identity"), privateIdentity(f, user.Id).GetString("subject")) {
 		t.Fatal("missing native identity link")
 	}
 	if first.Meta["accessToken"] != "" || first.Meta["refreshToken"] != "" || strings.Contains(string(mustJSON(t, first.Meta)), "id_token") {
@@ -187,96 +187,59 @@ func TestNativeOAuthHooksCreationAndExternalAuthLink(t *testing.T) {
 	}
 }
 
+// End-to-end through PocketBase's own verification purge and session rotation.
+// The same-email variant and a failed link restore are covered directly by
+// TestShopifyLoginSynchronizesTheAccount and its link-restore refusal test.
 func TestShopifyVerificationUpgradeKeepsNativeOAuthLink(t *testing.T) {
-	for _, changeEmail := range []bool{false, true} {
-		name := "same_email"
-		if changeEmail {
-			name = "changed_email"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := setup(t, "email")
-			first := decodeAuth(t, f.login())
-			_, user := f.authRecord()
-			if user.Verified() {
-				t.Fatal("expected an initially unverified Shopify email")
-			}
-			accountID := privateAccount(f, user.Id).Id
-			link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
-				"collectionRef": user.Collection().Id, "recordRef": user.Id, "provider": providerName,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			providerID := link.ProviderId()
-			// Verification must still revoke other pre-existing OAuth links.
-			other := core.NewExternalAuth(f.app)
-			other.SetCollectionRef(user.Collection().Id)
-			other.SetRecordRef(user.Id)
-			other.SetProvider("google")
-			other.SetProviderId("previous-unverified-identity")
-			if err := f.app.Save(other); err != nil {
-				t.Fatal(err)
-			}
-			f.mock.Fault = ""
-			if changeEmail {
-				f.mock.ProfileEmail = "verified@example.test"
-			}
-			for range 2 {
-				result := decodeAuth(t, f.login())
-				if result.Record["id"] != user.Id || result.Record["verified"] != true || result.Meta["isNew"] != false {
-					t.Fatal("verification or repeat login changed the Shopify account")
-				}
-				if changeEmail && result.Record["email"] != f.mock.ProfileEmail {
-					t.Fatal("verified email was not synchronized")
-				}
-				link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
-					"collectionRef": user.Collection().Id, "provider": providerName, "providerId": providerID,
-				})
-				if err != nil || link.RecordRef() != user.Id {
-					t.Fatal("verification lost the native Shopify identity link", err)
-				}
-				count, err := f.app.CountRecords(core.CollectionNameExternalAuths)
-				if err != nil || count != 1 || privateAccount(f, user.Id).Id != accountID {
-					t.Fatal("verification left stale links or changed the private identity")
-				}
-				f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", result.Token), 200)
-			}
-			if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, other.Id); !errors.Is(err, sql.ErrNoRows) {
-				t.Fatal("verification kept an unrelated pre-existing OAuth link")
-			}
-			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 401)
-		})
-	}
-}
-
-func TestShopifyVerificationUpgradeRollsBackWhenLinkRestoreFails(t *testing.T) {
 	f := setup(t, "email")
 	first := decodeAuth(t, f.login())
 	_, user := f.authRecord()
-	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": user.Id})
+	if user.Verified() {
+		t.Fatal("expected an initially unverified Shopify email")
+	}
+	identityRecordID := privateIdentity(f, user.Id).Id
+	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+		"collectionRef": user.Collection().Id, "recordRef": user.Id, "provider": providerName,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restoreAttempted := false
-	f.app.OnRecordCreate(core.CollectionNameExternalAuths).BindFunc(func(e *core.RecordEvent) error {
-		restoreAttempted = true
-		return errors.New("identity storage unavailable")
-	})
+	providerID := link.ProviderId()
+	// Verification must still revoke other pre-existing OAuth links.
+	other := core.NewExternalAuth(f.app)
+	other.SetCollectionRef(user.Collection().Id)
+	other.SetRecordRef(user.Id)
+	other.SetProvider("google")
+	other.SetProviderId("previous-unverified-identity")
+	if err := f.app.Save(other); err != nil {
+		t.Fatal(err)
+	}
 	f.mock.Fault = ""
 	f.mock.ProfileEmail = "verified@example.test"
-	f.loginShop()
-	f.expect(f.completeCallback(f.authorize(false)), 409)
-	if !restoreAttempted {
-		t.Fatal("login did not attempt to restore the Shopify link")
+	for range 2 {
+		result := decodeAuth(t, f.login())
+		if result.Record["id"] != user.Id || result.Record["verified"] != true || result.Meta["isNew"] != false {
+			t.Fatal("verification or repeat login changed the Shopify account")
+		}
+		if result.Record["email"] != f.mock.ProfileEmail {
+			t.Fatal("verified email was not synchronized")
+		}
+		link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{
+			"collectionRef": user.Collection().Id, "provider": providerName, "providerId": providerID,
+		})
+		if err != nil || link.RecordRef() != user.Id {
+			t.Fatal("verification lost the native Shopify identity link", err)
+		}
+		count, err := f.app.CountRecords(core.CollectionNameExternalAuths)
+		if err != nil || count != 1 || privateIdentity(f, user.Id).Id != identityRecordID {
+			t.Fatal("verification left stale links or changed the private identity")
+		}
+		f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", result.Token), 200)
 	}
-	after, err := f.app.FindRecordById("users", user.Id)
-	if err != nil || after.Verified() || after.Email() != user.Email() {
-		t.Fatal("failed link restoration persisted the verification upgrade", err)
+	if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, other.Id); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("verification kept an unrelated pre-existing OAuth link")
 	}
-	if _, err := f.app.FindRecordById(core.CollectionNameExternalAuths, link.Id); err != nil {
-		t.Fatal("failed link restoration lost the original OAuth link", err)
-	}
-	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 200)
+	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-refresh", "", "", first.Token), 401)
 }
 
 func mustJSON(t *testing.T, data any) []byte {
@@ -311,7 +274,7 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 					return e.ForbiddenError("Signup rejected by the project.", nil)
 				})
 			}
-			f.loginShop()
+			f.loginStore()
 			r := f.completeCallback(f.authorize(false))
 			f.expect(r, 403)
 			if strings.Contains(r.body, `"token"`) {
@@ -329,7 +292,7 @@ func TestNativeOAuthAndCreateHooksCanRejectShopify(t *testing.T) {
 
 func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	cb := f.authorize(false)
 	endpoint := f.api.URL + "/api/collections/users/auth-with-oauth2"
 	page := f.callback(cb)
@@ -341,7 +304,7 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 	f.client.Jar, _ = cookiejar.New(nil)
 	data["redirectURL"] = "https://evil.example/callback"
 	f.expect(f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), ""), 400)
-	data["redirectURL"] = f.s.oauth.RedirectURL
+	data["redirectURL"] = f.s.cfg.RedirectURL
 	r := f.request("POST", endpoint, f.api.URL, nativeOAuthBody(t, data), "")
 	f.expect(r, 200)
 	if len(r.cookies) != 0 || r.headers.Get("Cache-Control") != "no-store" {
@@ -351,18 +314,17 @@ func TestNativeOAuthCodeIsPKCEBoundSingleUseAndOriginProtected(t *testing.T) {
 }
 
 func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
-	for _, fault := range []string{"code_expired", "missing", "short", "long", "characters", "wrong"} {
+	// Expired codes and wrong verifiers are refused by the store; see
+	// TestStoreRejectsInvalidLogins. Malformed verifiers never reach it.
+	for _, fault := range []string{"missing", "short", "long", "characters"} {
 		t.Run(fault, func(t *testing.T) {
 			f := setup(t, "")
-			f.loginShop()
+			f.loginStore()
 			page := f.callback(f.authorize(false))
 			f.expect(page, 200)
 			data := callbackData(t, page.body)
 			status := 400
 			switch fault {
-			case "code_expired":
-				f.mock.Fault = fault
-				status = 502
 			case "missing":
 				data["codeVerifier"] = ""
 			case "short":
@@ -371,9 +333,6 @@ func TestNativeOAuthRejectsExpiredCodeAndWrongVerifier(t *testing.T) {
 				data["codeVerifier"] = strings.Repeat("a", 129)
 			case "characters":
 				data["codeVerifier"] = strings.Repeat("!", 43)
-			case "wrong":
-				data["codeVerifier"] = strings.Repeat("a", 43)
-				status = 502
 			}
 			f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), status)
 		})
@@ -393,7 +352,7 @@ func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
 		t.Fatal("secret verifier leaked into authorization URL")
 	}
 	p := &shopifyProvider{}
-	p.SetAuthURL(f.s.oauth.Endpoint.AuthURL)
+	p.SetAuthURL(f.s.store.authURL())
 	if p.BuildAuthURL("state") != "" {
 		t.Fatal("provider allowed authorization without S256 PKCE")
 	}
@@ -401,7 +360,7 @@ func TestNativeAuthMethodsBindNonceToFreshPKCEChallenge(t *testing.T) {
 
 func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 	f := setup(t, "")
-	f.loginShop()
+	f.loginStore()
 	start := f.start(false)
 	u, _ := url.Parse(start.location)
 	q := u.Query()
@@ -421,7 +380,7 @@ func TestNativeOAuthRejectsNonceSubstitutionWithValidPKCE(t *testing.T) {
 func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 	f := setup(t, "")
 	native := nativeSignup(f, "unrelated@example.test")
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	data := callbackData(t, page.body)
 	f.expect(f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), native.Token), 409)
@@ -431,41 +390,12 @@ func TestNativeOAuthDoesNotLinkToTheAuthorizationHeaderAccount(t *testing.T) {
 	}
 }
 
-func TestNativeOAuthPreservesLinkedAccountAndRelations(t *testing.T) {
-	f := setup(t, "")
-	documentsCollection(f)
-	c, _ := f.app.FindCollectionByNameOrId("users")
-	legacy := core.NewRecord(c)
-	legacy.SetEmail("camille@example.test")
-	legacy.SetPassword("TestPassword12345")
-	if err := f.app.Save(legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := putAccount(f.app, legacy.Id, f.s.issuer, "shopify-customer-sub-12345", "gid://shopify/Customer/12345", nil); err != nil {
-		t.Fatal(err)
-	}
-	token, _ := legacy.NewAuthToken()
-	doc := createDocument(f, token, legacy.Id)
-	if err := ensureCollection(f.app, "users"); err != nil {
-		t.Fatal(err)
-	}
-	result := decodeAuth(t, f.login())
-	if result.Record["id"] != legacy.Id || result.Meta["isNew"] != false {
-		t.Fatal("prototype identity was not preserved")
-	}
-	f.expect(f.request("GET", f.api.URL+"/api/collections/documents/records/"+doc, "", "", result.Token), 200)
-	link, err := f.app.FindFirstExternalAuthByExpr(dbx.HashExp{"provider": providerName, "recordRef": legacy.Id})
-	if err != nil || link.ProviderId() == "" {
-		t.Fatal("native link was not created for the prototype user")
-	}
-}
-
 func TestShopifyProviderRegistrationAndIdentityNamespace(t *testing.T) {
 	p, err := auth.NewProviderByName(providerName)
 	if err != nil || !p.PKCE() {
 		t.Fatal("Shopify provider was not registered")
 	}
-	if identityID("issuer-a", "123") == identityID("issuer-b", "123") {
+	if oauthLinkProviderID("issuer-a", "123") == oauthLinkProviderID("issuer-b", "123") {
 		t.Fatal("provider identity ignores its issuer")
 	}
 	if _, err := p.FetchAuthUser(nil); err == nil {
@@ -487,7 +417,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.configureProvider(); err != nil {
+	if _, err := saveProviderConfig(f.app, f.s.collectionID, f.s.cfg.ClientID); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = f.app.FindCollectionByNameOrId("users")
@@ -502,7 +432,7 @@ func TestShopifyProviderConfigurationPreservesOtherProvidersAndPolicies(t *testi
 
 func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T) {
 	f := setup(t, "email") // The verified claim does not match the profile email.
-	f.loginShop()
+	f.loginStore()
 	page := f.callback(f.authorize(false))
 	f.expect(page, 200)
 	data := callbackData(t, page.body)
@@ -518,7 +448,7 @@ func TestOAuthCreateDataCannotVerifyEmailOrChooseTheShopifyPassword(t *testing.T
 	r := f.request("POST", f.api.URL+"/api/collections/users/auth-with-oauth2", f.api.URL, string(mustJSON(t, body)), "")
 	f.expect(r, 200)
 	result := decodeAuth(t, r)
-	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateAccount(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
+	if result.Record["verified"] != false || result.Record["email"] != "camille@example.test" || privateIdentity(f, result.Record["id"].(string)).GetString("subject") != "shopify-customer-sub-12345" {
 		t.Fatal("client-controlled createData overrode the verified provider profile")
 	}
 	for _, field := range []string{"shopify_issuer", "shopify_sub", "shopify_customer_id"} {

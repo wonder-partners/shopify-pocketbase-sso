@@ -41,7 +41,7 @@ func TestShopifyAuthAlertDoesNotBlockDatabaseWritesOrLogin(t *testing.T) {
 		<-release
 		return nil
 	})
-	f.loginShop()
+	f.loginStore()
 	callback := f.authorize(false)
 	loginDone := make(chan response, 1)
 	go func() { loginDone <- f.completeCallback(callback) }()
@@ -69,77 +69,13 @@ func TestShopifyAuthAlertDoesNotBlockDatabaseWritesOrLogin(t *testing.T) {
 	releaseMail()
 }
 
-func TestRejectedShopifyAuthDoesNotSendAlert(t *testing.T) {
-	for _, stage := range []string{"oauth_after", "auth_after", "http_error_after", "commit_failure"} {
-		t.Run(stage, func(t *testing.T) {
-			f := setup(t, "")
-			f.login()
-			useNewDevice(f)
-			var sent atomic.Int32
-			f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
-				sent.Add(1)
-				return nil
-			})
-			if stage == "oauth_after" {
-				f.app.OnRecordAuthWithOAuth2Request("users").BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
-					if err := e.Next(); err != nil {
-						return err
-					}
-					return e.ForbiddenError("Project policy denied login.", nil)
-				})
-			} else {
-				if stage == "commit_failure" {
-					for _, query := range []string{
-						"CREATE TABLE alert_parent (id TEXT PRIMARY KEY)",
-						"CREATE TABLE alert_child (parent_id TEXT REFERENCES alert_parent(id) DEFERRABLE INITIALLY DEFERRED)",
-					} {
-						if _, err := f.app.DB().NewQuery(query).Execute(); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
-				f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
-					if stage == "commit_failure" {
-						if _, err := e.App.DB().NewQuery("INSERT INTO alert_child (parent_id) VALUES ('missing')").Execute(); err != nil {
-							return err
-						}
-					}
-					if err := e.Next(); err != nil {
-						return err
-					}
-					switch stage {
-					case "auth_after":
-						return e.ForbiddenError("Project policy denied login.", nil)
-					case "http_error_after":
-						return e.JSON(http.StatusForbidden, map[string]string{"message": "Project policy denied login."})
-					default:
-						return nil
-					}
-				})
-			}
-			f.loginShop()
-			result := f.completeCallback(f.authorize(false))
-			if stage == "commit_failure" {
-				if result.status < http.StatusBadRequest {
-					t.Fatal("commit unexpectedly succeeded")
-				}
-			} else {
-				f.expect(result, http.StatusForbidden)
-			}
-			if sent.Load() != 0 {
-				t.Fatal("rejected login sent a new-device alert")
-			}
-		})
-	}
-}
-
 func TestShopifyAuthAlertFailureDoesNotRejectLogin(t *testing.T) {
 	f := setup(t, "")
 	f.login()
 	useNewDevice(f)
 	delivered := make(chan bool, 1)
 	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
-		_, err := e.App.FindFirstRecordByFilter(accountsCollectionName, "user = {:user}", map[string]any{"user": e.Record.Id})
+		_, err := e.App.FindFirstRecordByFilter(identitiesCollectionName, "user = {:user}", map[string]any{"user": e.Record.Id})
 		delivered <- e.App.TxInfo() == nil && err == nil
 		return errors.New("simulated mail delivery failure")
 	})
@@ -170,54 +106,26 @@ func TestNativePasswordAuthAlertKeepsItsHookBehavior(t *testing.T) {
 	}
 }
 
-func TestNestedShopifyTransactionDefersAuthAlert(t *testing.T) {
+// End-to-end: a login rejected by a written HTTP response sends no alert.
+// The other rejection paths are covered by TestShopifyLoginAfterCommit.
+func TestRejectedShopifyAuthDoesNotSendAlert(t *testing.T) {
 	f := setup(t, "")
 	f.login()
 	useNewDevice(f)
+	var sent atomic.Int32
+	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
+		sent.Add(1)
+		return nil
+	})
 	f.app.OnRecordAuthRequest("users").BindFunc(func(e *core.RecordAuthRequestEvent) error {
-		return withNestedAuthTransaction(e.RequestEvent, e.Next)
-	})
-	delivered := make(chan bool, 1)
-	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_, err := e.App.NonconcurrentDB().NewQuery("UPDATE users SET emailVisibility = emailVisibility").WithContext(ctx).Execute()
-		delivered <- e.App.TxInfo() == nil && err == nil
-		return nil
-	})
-	f.login()
-	select {
-	case afterCommit := <-delivered:
-		if !afterCommit {
-			t.Fatal("nested auth transaction sent an alert before commit")
+		if err := e.Next(); err != nil {
+			return err
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("nested transaction alert was not sent")
-	}
-}
-
-func TestOuterShopifyTransactionUsesCommittedAppForAuthAlert(t *testing.T) {
-	f := setup(t, "")
-	f.login()
-	useNewDevice(f)
-	delivered := make(chan bool, 1)
-	f.app.OnMailerRecordAuthAlertSend().BindFunc(func(e *core.MailerRecordEvent) error {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_, err := e.App.NonconcurrentDB().NewQuery("UPDATE users SET emailVisibility = emailVisibility").WithContext(ctx).Execute()
-		delivered <- e.App.TxInfo() == nil && err == nil
-		return nil
+		return e.JSON(http.StatusForbidden, map[string]string{"message": "Project policy denied login."})
 	})
-	serverURL := projectTransactionServer(t, f, "success")
-	f.loginShop()
-	data := callbackData(t, f.callback(f.authorize(false)).body)
-	f.expect(f.request("POST", serverURL+"/api/collections/users/auth-with-oauth2", f.api.URL, nativeOAuthBody(t, data), ""), http.StatusOK)
-	select {
-	case afterCommit := <-delivered:
-		if !afterCommit {
-			t.Fatal("outer transaction alert used a closed transaction")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("outer transaction alert was not sent")
+	f.loginStore()
+	f.expect(f.completeCallback(f.authorize(false)), http.StatusForbidden)
+	if sent.Load() != 0 {
+		t.Fatal("rejected login sent a new-device alert")
 	}
 }
