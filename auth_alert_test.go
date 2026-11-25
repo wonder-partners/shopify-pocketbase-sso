@@ -22,7 +22,7 @@ func useNewDevice(f *fixture) {
 
 func TestShopifyAuthAlertDoesNotBlockDatabaseWritesOrLogin(t *testing.T) {
 	f := setup(t, "")
-	f.login() // Establish the initial device so that the next login needs an alert.
+	f.login()
 	useNewDevice(f)
 	started, release, finished := make(chan bool, 1), make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -106,8 +106,6 @@ func TestNativePasswordAuthAlertKeepsItsHookBehavior(t *testing.T) {
 	}
 }
 
-// End-to-end: a login rejected by a written HTTP response sends no alert.
-// The other rejection paths are covered by TestShopifyLoginAfterCommit.
 func TestRejectedShopifyAuthDoesNotSendAlert(t *testing.T) {
 	f := setup(t, "")
 	f.login()

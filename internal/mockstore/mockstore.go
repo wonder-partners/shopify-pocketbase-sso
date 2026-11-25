@@ -1,5 +1,3 @@
-// Package mockstore simulates the documented Shopify endpoints for local tests.
-// It is deliberately not a replacement identity provider for production.
 package mockstore
 
 import (
@@ -24,7 +22,7 @@ const Email = "camille@example.test"
 type authorization struct{ Challenge, Nonce string }
 type Mock struct {
 	BaseURL, Callback, Fault string
-	ProfileEmail, Subject    string // Optional fixture overrides, never used against Shopify.
+	ProfileEmail, Subject    string
 	key                      *rsa.PrivateKey
 	mu                       sync.Mutex
 	codes                    map[string]authorization

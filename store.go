@@ -20,9 +20,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// store is the one Shopify store whose customers can log in. It runs
-// discovery in the background and verifies each login code. Discovery results
-// are published by closing readyCh, then remain immutable.
 type store struct {
 	cfg           Config
 	client        *http.Client
@@ -36,8 +33,6 @@ type store struct {
 	issuer, graphql string
 }
 
-// startStore discovers the store's endpoints in the background, retrying until
-// it succeeds or ctx is canceled. cfg must already be validated.
 func startStore(ctx context.Context, cfg Config, logger func() *slog.Logger) *store {
 	callback, _ := url.Parse(cfg.RedirectURL)
 	origin := callback.Scheme + "://" + callback.Host
@@ -51,7 +46,6 @@ func startStore(ctx context.Context, cfg Config, logger func() *slog.Logger) *st
 	return st
 }
 
-// ready reports whether discovery succeeded and the store is not stopped.
 func (st *store) ready() bool {
 	if st.ctx.Err() != nil {
 		return false
@@ -64,7 +58,6 @@ func (st *store) ready() bool {
 	}
 }
 
-// authURL is the store's authorization endpoint, or "" until it is ready.
 func (st *store) authURL() string {
 	if !st.ready() {
 		return ""
@@ -72,7 +65,6 @@ func (st *store) authURL() string {
 	return st.oauth.Endpoint.AuthURL
 }
 
-// stop cancels discovery and waits for it to finish. It is safe to repeat.
 func (st *store) stop() {
 	st.cancel()
 	<-st.done
@@ -86,8 +78,6 @@ func (st *store) discoverInBackground() {
 		err := st.discover(ctx)
 		cancel()
 		if err == nil && st.ctx.Err() == nil {
-			// Provider configuration and hooks are already installed by New.
-			// Runtime endpoints need no database write or writer acquisition.
 			close(st.readyCh)
 			st.logger().Info("Shopify authentication is ready")
 			return
@@ -107,16 +97,11 @@ func (st *store) discoverInBackground() {
 	}
 }
 
-// verify exchanges a login code as a public PKCE client and checks everything
-// Shopify returns: the ID token (signature, issuer, audience, expiry, nonce,
-// access token hash) and the customer profile. Refusals are HTTP errors whose
-// messages carry only fixed diagnostic labels.
 func (st *store) verify(ctx context.Context, code, codeVerifier string) (verifiedCustomer, *oauth2.Token, error) {
 	if !st.ready() {
 		return verifiedCustomer{}, nil, router.NewApiError(http.StatusServiceUnavailable, "Shopify authentication is temporarily unavailable.", nil)
 	}
 	ctx = oidc.ClientContext(ctx, st.client)
-	// Exchange as a public PKCE client, never using PocketBase's config marker.
 	token, err := st.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return verifiedCustomer{}, nil, router.NewApiError(http.StatusBadGateway, "Shopify token exchange failed.", nil)
@@ -128,7 +113,7 @@ func (st *store) verify(ctx context.Context, code, codeVerifier string) (verifie
 		st.logger().Warn("Shopify ID token rejected", "reason", reason, "claim_types", idTokenClaimTypes(raw))
 		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify ID token ("+reason+").", nil)
 	}
-	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(oauth2.S256ChallengeFromVerifier(codeVerifier))) != 1 || id.Subject == "" {
+	if subtle.ConstantTimeCompare([]byte(id.Nonce), []byte(expectedStatelessOIDCNonce(codeVerifier))) != 1 || id.Subject == "" {
 		return verifiedCustomer{}, nil, router.NewApiError(http.StatusUnauthorized, "Invalid Shopify nonce or subject.", nil)
 	}
 	if id.AccessTokenHash != "" && id.VerifyAccessToken(token.AccessToken) != nil {
@@ -144,8 +129,6 @@ func (st *store) verify(ctx context.Context, code, codeVerifier string) (verifie
 	}
 	return verifiedCustomer{
 		issuer: st.issuer, subject: id.Subject, customerID: profile.ID, email: profile.EmailAddress.Email,
-		// PocketBase treats a provider email as verified. Only trust a verified
-		// ID token claim that matches the customer profile.
 		emailVerified: c.EmailVerified && strings.EqualFold(c.Email, profile.EmailAddress.Email),
 	}, token, nil
 }
@@ -228,10 +211,6 @@ func (st *store) discover(ctx context.Context) error {
 }
 
 // Shopify can return a JSON number for sub, contrary to OIDC's string type.
-// This adapter is only used INSIDE IDTokenVerifier: it checks the allowed JWT
-// algorithm, then calls this method to verify the ORIGINAL signed token.
-// Only after signature verification do we normalize the verified sub for its
-// claims decoder. Issuer, audience, expiry, nonce and at_hash checks stay active.
 type shopifySubjectKeySet struct{ oidc.KeySet }
 
 func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) ([]byte, error) {
@@ -245,7 +224,7 @@ func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) (
 	}
 	sub := bytes.TrimSpace(fields["sub"])
 	if len(sub) == 0 || sub[0] == '"' {
-		return payload, nil // Keep standard string subjects unchanged.
+		return payload, nil
 	}
 	if len(sub) > 255 || sub[0] < '1' || sub[0] > '9' {
 		return nil, errors.New("Shopify subject must be a string or positive decimal integer")
@@ -255,7 +234,6 @@ func (k shopifySubjectKeySet) VerifySignature(ctx context.Context, raw string) (
 			return nil, errors.New("Shopify subject must be a string or positive decimal integer")
 		}
 	}
-	// Use the exact decimal bytes, never float64, to preserve large Shopify IDs.
 	fields["sub"], _ = json.Marshal(string(sub))
 	return json.Marshal(fields)
 }
@@ -285,7 +263,6 @@ func (st *store) fetchCustomer(ctx context.Context, accessToken string) (*custom
 	return c, nil
 }
 
-// Return only fixed labels: verifier errors can contain claims or upstream bodies.
 func idTokenFailureReason(err error) string {
 	var expired *oidc.TokenExpiredError
 	switch {
@@ -326,8 +303,6 @@ func idTokenFailureReason(err error) string {
 	}
 }
 
-// Diagnostic only. Report JSON types of known OIDC fields, never their values.
-// This unverified payload must never be used to authenticate or create a session.
 func idTokenClaimTypes(raw string) map[string]string {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 || len(parts[1]) > 64*1024 {

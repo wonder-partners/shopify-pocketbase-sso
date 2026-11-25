@@ -38,7 +38,6 @@ func projectTransactionServer(t *testing.T, f *fixture, scenario string) string 
 			return nil
 		})
 	}})
-	// Compression must remain active through the outer transaction's commit.
 	compression := apis.Gzip()
 	compression.Priority = -2
 	r.Bind(compression)
@@ -52,9 +51,6 @@ func projectTransactionServer(t *testing.T, f *fixture, scenario string) string 
 	return server.URL
 }
 
-// End-to-end wiring through a host transaction and gzip. The outcome matrix is
-// covered by TestRespondAfterCommit; these cases keep PocketBase's native
-// 204-on-commit behaviour under watch, on both a host commit and a rollback.
 func TestShopifyUnlinkWaitsForOuterTransaction(t *testing.T) {
 	for _, scenario := range []string{"success", "denied"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -88,8 +84,6 @@ func TestShopifyUnlinkWaitsForOuterTransaction(t *testing.T) {
 	}
 }
 
-// End-to-end wiring through a host transaction and gzip: a session login and a
-// real PocketBase MFA challenge that must survive the host commit.
 func TestShopifyAuthWaitsForOuterTransaction(t *testing.T) {
 	for _, mode := range []string{"login", "mfa"} {
 		t.Run(mode, func(t *testing.T) {

@@ -32,7 +32,7 @@ type fixture struct {
 	client     *http.Client
 	mock       *mockstore.Mock
 	auth       authResult
-	flows      map[string]browserFlow // Simulated sessionStorage, not server state.
+	flows      map[string]browserFlow
 }
 
 const collectionName = "users"
@@ -239,8 +239,6 @@ func (f *fixture) login() response {
 }
 
 func (f *fixture) callback(callback string) response {
-	// Emulate the FRONTEND callback checks. This does not call a custom API.
-	// The same checks are exercised in JavaScript with the official SDK too.
 	f.t.Helper()
 	u, err := url.Parse(callback)
 	if err != nil {
@@ -262,7 +260,6 @@ func (f *fixture) callback(callback string) response {
 	return response{status: 200, body: string(mustJSON(f.t, data))}
 }
 
-// Exercise browser-side callback validation followed by the native endpoint.
 func (f *fixture) completeCallback(callback string) response {
 	f.t.Helper()
 	page := f.callback(callback)
@@ -314,7 +311,6 @@ func TestExistingStoreSessionCreatesPocketBaseSession(t *testing.T) {
 	if strings.Contains(callback.location, token) {
 		t.Fatal("token leaked to URL")
 	}
-	// Use the issued token against the actual PocketBase CRUD API.
 	r := f.request("GET", f.api.URL+"/api/collections/"+collectionName+"/records/"+record.Id, "", "", token)
 	f.expect(r, 200)
 }
@@ -336,7 +332,6 @@ func TestSilentFailureAndInteractiveFlowAreLeftToTheFrontend(t *testing.T) {
 		t.Fatal("interactive login must not use prompt=none")
 	}
 	f.expect(f.request("GET", interactive.location, "", "", ""), 200)
-	// Simulate completing the provider's login form in the same browser.
 	f.request("POST", f.store.URL+"/login", "", "", "")
 	auth := f.request("GET", interactive.location, "", "", "")
 	f.expect(auth, 302)
@@ -354,19 +349,15 @@ func TestFrontendCallbackRequiresStateAndTabStorage(t *testing.T) {
 	q.Set("state", "wrong")
 	u.RawQuery = q.Encode()
 	f.expect(f.callback(u.String()), 400)
-	// A second tab without the matching sessionStorage rejects the callback.
 	original := f.flows
 	f.flows = nil
 	f.expect(f.callback(cb), 400)
 	f.flows = original
 	f.expect(f.completeCallback(cb), 200)
-	// Replaying a previously consumed callback must fail.
 	f.expect(f.callback(cb), 400)
 }
 
 func TestNumericShopifySubjectCreatesPocketBaseSession(t *testing.T) {
-	// End-to-end precision of a large numeric subject. Small numeric subjects
-	// are covered directly by TestStoreVerifiesALogin.
 	for _, tc := range []struct{ fault, subject string }{
 		{"numeric:", "900719925474099312345"},
 	} {
@@ -488,8 +479,6 @@ func TestShopifyDoesNotAddOrManageHostProfileFields(t *testing.T) {
 	}
 	f.login()
 	_, before := f.authRecord()
-	// A host project may still define its own names. They are not Shopify data
-	// and must survive setup and subsequent Shopify logins unchanged.
 	c.Fields.Add(&core.TextField{Name: "first_name"}, &core.TextField{Name: "last_name"})
 	if err := f.app.Save(c); err != nil {
 		t.Fatal(err)
@@ -551,7 +540,6 @@ func TestPocketBasePermissionsAndSessionExpiry(t *testing.T) {
 	if refreshed.Token == "" {
 		t.Fatal("native token renewal returned no token")
 	}
-	// A correctly signed but expired PB token must fail too.
 	expired, err := r.NewStaticAuthToken(time.Nanosecond)
 	if err != nil {
 		t.Fatal(err)
@@ -611,8 +599,6 @@ func TestProductionURLRequirements(t *testing.T) {
 	}
 }
 
-// PocketBase already has an OIDC provider. Verify its compatibility separately
-// and show why profile enrichment still needs the Shopify GraphQL API.
 func TestNativePocketBaseOIDCProvider(t *testing.T) {
 	f := setup(t, "")
 	f.loginStore()

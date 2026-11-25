@@ -16,7 +16,6 @@ type Config struct {
 	AllowLoopbackHTTP bool   // Only for the local mock and automated tests.
 }
 
-// The trusted store URL is operator configuration, never a request parameter.
 func checkURL(raw string, allowHTTP, originOnly bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || u == nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

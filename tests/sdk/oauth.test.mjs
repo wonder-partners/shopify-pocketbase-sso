@@ -12,7 +12,6 @@ function storage() {
   };
 }
 
-// Simulated browser storage and navigation, but real SDK and HTTP APIs.
 const localStorage = storage();
 const sessionStorage = storage();
 globalThis.window = {localStorage, addEventListener() {}};
@@ -34,7 +33,6 @@ globalThis.fetch = async (url, options = {}) => {
     assert.equal(scrubbed, true, 'Scrub callback before exchanging code');
     nativeExchanges++;
   }
-  // Browsers set Origin automatically. Node needs the same header explicitly.
   const headers = new Headers(options.headers);
   if (options.method === 'POST') headers.set('Origin', input.url);
   const response = await originalFetch(url, {...options, headers});
@@ -48,7 +46,6 @@ globalThis.fetch = async (url, options = {}) => {
 const pb = new PocketBase(input.url);
 const redirectURL = input.redirectURL;
 
-// Test-owned browser flow exercising the real PocketBase SDK and HTTP APIs.
 async function loginWithShopify(silent = false) {
   const methods = await pb.collection('users').listAuthMethods();
   const provider = methods.oauth2.providers.find(p => p.name === 'shopify');
@@ -82,7 +79,6 @@ async function completeShopifyLogin() {
   const code = params.get('code');
   if (!code) throw new Error('Missing Shopify code.');
 
-  // Prevent linking to another account that is already signed in.
   pb.authStore.clear();
   return pb.collection('users').authWithOAuth2Code(
     'shopify', code, flow.verifier, redirectURL,
@@ -106,7 +102,6 @@ function assertNotAuthenticated() {
   assert.equal(pb.authStore.record, null);
 }
 
-// No Shopify session: prompt=none returns an error, no token exchange or loop.
 await loginWithShopify(true);
 const silentURL = new URL(location.destination);
 assert.equal(silentURL.searchParams.get('prompt'), 'none');
@@ -118,7 +113,6 @@ assert.equal(nativeExchanges, 0);
 assert.equal(sessionStorage.getItem('shopify.oauth'), null);
 assertNotAuthenticated();
 
-// Interactive attempt, followed by completion of the mock Shopify login form.
 await loginWithShopify(false);
 assert.equal(new URL(location.destination).searchParams.has('prompt'), false);
 const form = await originalFetch(location.destination, {redirect: 'manual'});
@@ -127,7 +121,6 @@ const login = await originalFetch(input.storeURL + '/login', {method: 'POST', re
 assert.equal(login.status, 303);
 storeCookie = login.headers.getSetCookie()[0].split(';')[0];
 
-// State/expiry/storage errors are rejected in the frontend, before any exchange.
 for (const fault of ['state', 'expired', 'missing', 'malformed', 'missing_code']) {
   await loginWithShopify(true);
   const callback = await authorize();
@@ -175,12 +168,10 @@ assert.equal(result.meta.accessToken, '');
 assert.equal(result.meta.refreshToken, '');
 await pb.collection('users').getOne(result.record.id);
 
-// Local callback replay is stopped without a network request.
 location.search = callback.search;
 await assert.rejects(completeShopifyLogin());
 assert.equal(nativeExchanges, 1);
 
-// Bypassing the frontend replay check still fails at the upstream token endpoint.
 await assert.rejects(pb.collection('users').authWithOAuth2Code(
   'shopify', callback.searchParams.get('code'), flow.verifier, input.redirectURL,
 ), error => error.status === 502);

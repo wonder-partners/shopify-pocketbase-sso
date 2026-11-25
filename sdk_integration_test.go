@@ -19,7 +19,6 @@ func TestOfficialSDKUsesNativeOAuth2Code(t *testing.T) {
 	script, _ := filepath.Abs("tests/sdk/oauth.test.mjs")
 	cmd := exec.Command("node", script)
 	cmd.Stdin = bytes.NewReader(data)
-	// Do not print subprocess output: SDK errors can include request auth data.
 	if err := cmd.Run(); err != nil {
 		t.Fatal("official SDK authWithOAuth2Code integration failed:", err)
 	}

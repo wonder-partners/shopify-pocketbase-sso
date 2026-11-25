@@ -11,8 +11,6 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// A bare PocketBase app with one table to observe commits and a deferred
-// foreign key that makes a commit fail on demand.
 func committedResponseApp(t *testing.T) core.App {
 	t.Helper()
 	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir()})
@@ -43,7 +41,6 @@ func committed(t *testing.T, app core.App) bool {
 
 var errStorage = errors.New("storage unavailable")
 
-// Like net/http's server, accept an empty write after a status without a body.
 type serverLikeRecorder struct{ *httptest.ResponseRecorder }
 
 func (r serverLikeRecorder) Write(data []byte) (int, error) {
@@ -53,7 +50,6 @@ func (r serverLikeRecorder) Write(data []byte) (int, error) {
 	return r.ResponseRecorder.Write(data)
 }
 
-// Each step writes the change being protected, then ends the way a hook chain can.
 var committedResponseSteps = map[string]func(e *core.RequestEvent, tx core.App) error{
 	"ok": func(e *core.RequestEvent, _ core.App) error {
 		return e.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -76,7 +72,6 @@ var committedResponseSteps = map[string]func(e *core.RequestEvent, tx core.App) 
 	"mfa_without_challenge": func(*core.RequestEvent, core.App) error {
 		return apis.ErrMFA
 	},
-	// Like native record deletion: the 204 is written once the transaction completes.
 	"written_on_complete": func(e *core.RequestEvent, tx core.App) error {
 		tx.TxInfo().OnComplete(func(txErr error) error {
 			if txErr == nil {
@@ -86,7 +81,6 @@ var committedResponseSteps = map[string]func(e *core.RequestEvent, tx core.App) 
 		})
 		return nil
 	},
-	// A hook writes a success response, then the storage below it fails.
 	"written_then_error": func(e *core.RequestEvent, _ core.App) error {
 		if err := e.NoContent(http.StatusNoContent); err != nil {
 			return err
@@ -115,18 +109,17 @@ func TestRespondAfterCommit(t *testing.T) {
 	unlink := commitRules{responseWrittenOnComplete: true}
 	type want struct {
 		committed bool
-		status    int   // 0: nothing sent to the browser by this module
-		err       error // nil, errStorage, apis.ErrMFA, or errAny for any error
+		status    int
+		err       error
 	}
 	errAny := errors.New("any error")
 	cases := []struct {
 		name  string
 		rules commitRules
 		step  string
-		outer string // "": no host transaction; "commit", "rollback", "propagate", "write_then_rollback"
+		outer string
 		want  want
 	}{
-		// Without a host transaction.
 		{"login ok", login, "ok", "", want{true, 200, nil}},
 		{"login written rejection", login, "written_rejection", "", want{false, 403, nil}},
 		{"login error", login, "error", "", want{false, 0, errStorage}},
@@ -145,7 +138,6 @@ func TestRespondAfterCommit(t *testing.T) {
 		{"unlink written then error", unlink, "written_then_error", "", want{false, 0, errStorage}},
 		{"unlink MFA is not accepted", unlink, "mfa", "", want{false, 0, apis.ErrMFA}},
 
-		// Inside a host transaction: nothing is sent before it completes.
 		{"login ok, host commits", login, "ok", "commit", want{true, 200, nil}},
 		{"login ok, host rolls back", login, "ok", "rollback", want{false, 0, errAny}},
 		{"login written rejection, host propagates", login, "written_rejection", "propagate", want{false, 403, errAny}},
@@ -157,7 +149,6 @@ func TestRespondAfterCommit(t *testing.T) {
 		{"unlink written on complete, host rolls back", unlink, "written_on_complete", "rollback", want{false, 0, errAny}},
 		{"unlink written rejection, host propagates", unlink, "written_rejection", "propagate", want{false, 403, errAny}},
 		{"unlink error, host propagates", unlink, "error", "propagate", want{false, 0, errStorage}},
-		// A host response written before its own rollback must not escape.
 		{"unlink ok, host writes then rolls back", unlink, "written_on_complete", "write_then_rollback", want{false, 0, errAny}},
 	}
 	for _, c := range cases {

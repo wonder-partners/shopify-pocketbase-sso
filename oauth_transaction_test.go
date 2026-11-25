@@ -495,8 +495,6 @@ func TestShopifyRequestsRunOutsideTheAuthTransaction(t *testing.T) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// This pool has one connection. An open auth transaction would hold it
-			// and prevent this query from completing before its deadline.
 			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 			defer cancel()
 			var result int
@@ -535,7 +533,6 @@ func TestShopifyAuthTransactionOfRecognizesOnlyShopifyLogins(t *testing.T) {
 				t.Fatalf("%s: login not recognized", name)
 			}
 		}
-		// Project hooks may open nested transactions; the login must survive them.
 		return login.RunInTransaction(func(nested core.App) error {
 			if got, ok := shopifyAuthTransactionOf(nested); !ok || got != login {
 				t.Fatal("nested transaction lost the Shopify login")
@@ -552,8 +549,8 @@ func TestShopifyLoginAfterCommit(t *testing.T) {
 	errHost := errors.New("host rolled back")
 	for _, c := range []struct {
 		name    string
-		host    bool  // the login runs inside a host transaction
-		outcome error // nil, errHost, or errCommit for a failing commit
+		host    bool
+		outcome error
 		want    bool
 	}{
 		{"commit", false, nil, true},
@@ -615,5 +612,4 @@ func TestShopifyLoginAfterCommit(t *testing.T) {
 	}
 }
 
-// errCommit marks a case whose COMMIT fails on a deferred foreign key.
 var errCommit = errors.New("commit failure")

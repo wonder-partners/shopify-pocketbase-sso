@@ -22,7 +22,6 @@ import (
 
 const testCallback = "http://127.0.0.1/oauth/callback"
 
-// A store talking to mockstore over HTTP, without PocketBase.
 type storeFixture struct {
 	t      *testing.T
 	store  *store
@@ -87,7 +86,6 @@ func (f *storeFixture) waitReady() {
 	waitUntil(f.t, "discovery", f.store.ready)
 }
 
-// code signs in to mockstore and returns an authorization code bound to verifier.
 func (f *storeFixture) code(verifier string) string {
 	f.t.Helper()
 	challenge := oauth2.S256ChallengeFromVerifier(verifier)
@@ -116,9 +114,7 @@ func TestStoreVerifiesALogin(t *testing.T) {
 		emailVerified  bool
 	}{
 		{"", "shopify-customer-sub-12345", true},
-		// The ID token's email differs from the customer profile's.
 		{"email", "shopify-customer-sub-12345", false},
-		// Shopify may send sub as a JSON number; keep its exact digits.
 		{"subject_number", "12345", true},
 		{"numeric:", "900719925474099312345", true},
 	} {
@@ -160,7 +156,6 @@ func TestStoreRejectsInvalidLogins(t *testing.T) {
 		{"signature", 401, "Invalid Shopify ID token (signature_mismatch)."},
 		{"algorithm", 401, "Invalid Shopify ID token (token_format_or_algorithm)."},
 		{"audience_number", 401, "Invalid Shopify ID token (claims_decode_failed)."},
-		// A numeric subject must not bypass any other check.
 		{"numeric:signature", 401, "Invalid Shopify ID token (signature_mismatch)."},
 		{"numeric:algorithm", 401, "Invalid Shopify ID token (token_format_or_algorithm)."},
 		{"numeric:issuer", 401, "Invalid Shopify ID token (issuer_mismatch)."},
@@ -182,7 +177,6 @@ func TestStoreRejectsInvalidLogins(t *testing.T) {
 			if token != nil || !errors.As(err, &apiErr) || apiErr.Status != c.status || apiErr.Message != c.message {
 				t.Fatalf("error = %v, want HTTP %d %q", err, c.status, c.message)
 			}
-			// Rejections are logged with safe labels only, never token values.
 			if c.status == 401 && strings.Contains(c.message, "ID token") &&
 				(!strings.Contains(f.logs.String(), "Shopify ID token rejected") || strings.Contains(f.logs.String(), mockstore.Email)) {
 				t.Fatal("ID token rejection was not logged safely:", f.logs.String())
@@ -227,7 +221,6 @@ func TestStoreDiscoveryRetriesAndRecovers(t *testing.T) {
 				})
 			})
 			waitUntil(t, "a failed discovery attempt", func() bool { return attempts.Load() > 0 })
-			// Nothing from a partial or failed discovery is published.
 			if f.store.ready() || f.store.authURL() != "" {
 				t.Fatal("a failed discovery was published")
 			}
@@ -291,7 +284,7 @@ func TestStoreStopCancelsDiscovery(t *testing.T) {
 	if f.store.ready() {
 		t.Fatal("a stopped store is ready")
 	}
-	f.store.stop() // stopping twice is harmless
+	f.store.stop()
 }
 
 func TestStoreStopsBeingReadyWhenStopped(t *testing.T) {

@@ -7,8 +7,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
-// The host owns the auth collection, its fields and its access rules.
-// Only provision the integration's private identities collection.
 func ensureCollection(app core.App, collectionName string) error {
 	return app.RunInTransaction(func(tx core.App) error {
 		c, err := tx.FindCollectionByNameOrId(collectionName)
@@ -22,13 +20,8 @@ func ensureCollection(app core.App, collectionName string) error {
 	})
 }
 
-// saveProviderConfig enables the Shopify provider on the accounts collection
-// (name or ID) and returns the collection ID. Other providers and policies of
-// the collection are kept.
 func saveProviderConfig(app core.App, collection, clientID string) (string, error) {
 	var c *core.Collection
-	// Read through the same transaction that saves the provider, so a host
-	// update cannot commit between our read and the collection replacement.
 	err := app.RunInTransaction(func(tx core.App) error {
 		var err error
 		c, err = tx.FindCollectionByNameOrId(collection)

@@ -8,13 +8,10 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// Keep discovered endpoints in memory, so discovery never needs the DB writer.
-// Preserve PocketBase's state, PKCE, nonce and all other native response fields.
 func (s *Service) nativeAuthMethodsMiddleware(e *core.RequestEvent) error {
 	if e.Request.Method != http.MethodGet || !strings.HasPrefix(e.Request.URL.Path, "/api/collections/") || !strings.HasSuffix(e.Request.URL.Path, "/auth-methods") {
 		return e.Next()
 	}
-	// The native response contains a fresh PKCE verifier, not public metadata.
 	noStore(e)
 	return s.shopifyAuthMethods(e)
 }
@@ -22,13 +19,7 @@ func (s *Service) nativeAuthMethodsMiddleware(e *core.RequestEvent) error {
 func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	original := e.Response
 	originalRequest := e.Request
-	if query := e.Request.URL.Query(); query.Has("fields") {
-		// Keep provider names and URLs until filtering and rewriting finish.
-		// The final JSON response applies PocketBase's native field picker.
-		e.Request = e.Request.Clone(e.Request.Context())
-		query.Del("fields")
-		e.Request.URL.RawQuery = query.Encode()
-	}
+	e.Request = withoutFieldsQuery(e.Request)
 	captured := &authResponseBuffer{header: original.Header().Clone()}
 	e.Response = captured
 	defer func() { e.Response, e.Request = original, originalRequest }()
@@ -60,7 +51,7 @@ func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 				authURL, _ := provider["authURL"].(string)
 				_, query, ok := strings.Cut(authURL, "?")
 				if !ok {
-					continue // Do not advertise an incomplete native PKCE URL.
+					continue
 				}
 				provider["authURL"] = storeAuthURL + "?" + query
 				provider["authUrl"] = provider["authURL"]
@@ -80,4 +71,15 @@ func (s *Service) shopifyAuthMethods(e *core.RequestEvent) error {
 	}
 	original.Header().Del("Content-Length")
 	return e.JSON(http.StatusOK, result)
+}
+
+func withoutFieldsQuery(r *http.Request) *http.Request {
+	query := r.URL.Query()
+	if !query.Has("fields") {
+		return r
+	}
+	cloned := r.Clone(r.Context())
+	query.Del("fields")
+	cloned.URL.RawQuery = query.Encode()
+	return cloned
 }
